@@ -5,8 +5,8 @@ now, and everything you can resume, across **Claude Code**, **Codex** and **pi**
 
 ![agora demo](demo/agora.gif)
 
-- **Live at the top.** Sessions that need you (a 🔔 on their Ghostty tab, or a
-  blocked Claude background agent) come first, then ones that are working or open.
+- **Live at the top.** Sessions that need you come first, then ones that are
+  working or open.
 - **History underneath**, newest first.
 - **Refreshes as you work.** New sessions appear and busy ones move up on their
   own, and the preview follows a conversation as it is written.
@@ -14,20 +14,31 @@ now, and everything you can resume, across **Claude Code**, **Codex** and **pi**
   conversation text itself a moment later, with the matching passage shown in
   the preview. Every word must match; tool output and file contents don't count.
 - **Preview** of the end of the conversation for the selected session.
-- **Enter** jumps to the session's Ghostty tab if it is open, attaches to a
-  background Claude agent, or resumes the session here in its own directory.
-- **t** resumes it in a new Ghostty tab instead, so agora stays open as a dashboard.
+- **Enter** attaches to a running background Claude agent, or resumes the
+  session here in its own directory.
 
-No tmux. Live state comes from `claude agents --json` and from Ghostty tab titles
-via Ghostty's AppleScript dictionary (macOS, Ghostty 1.3+). Without Ghostty it
-still lists and resumes sessions.
+It works in any terminal, with no tmux. Live state comes from
+`claude agents --json`, which covers running Claude sessions, interactive and
+background.
+
+### Ghostty integration
+
+On macOS with Ghostty 1.3+, agora also reads Ghostty's tab titles through its
+AppleScript dictionary. That adds:
+
+- live state for Codex sessions, which title their tab after the thread, and a
+  🔔 when a session's tab rings its bell;
+- **enter** jumps to a session's open tab instead of resuming it again;
+- **t** resumes a session in a new tab, so agora stays open as a dashboard.
+
+Other terminals don't have these yet.
 
 ## Keys
 
 | Key | Action |
 | --- | --- |
-| `enter` | jump to tab / attach / resume here |
-| `t` | resume (or attach) in a new Ghostty tab |
+| `enter` | attach / resume here (jump to tab in Ghostty) |
+| `t` | resume (or attach) in a new tab (Ghostty only) |
 | `/` | search titles and conversation text; `esc` clears |
 | `tab` | cycle agent: all, claude, codex, pi |
 | `l` | live sessions only |
