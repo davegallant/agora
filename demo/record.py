@@ -34,6 +34,9 @@ SCRIPT = [
     *[(0.18, c) for c in "redis cache"],
     (2.5, "\x1b[B"),   # matches found in conversation text
     (1.5, "\x1b[B"),
+    (1.0, "\r"),       # leave the search box
+    (1.2, "N"),        # jump between highlighted matches
+    (1.2, "N"),
     (2.0, "\x1b"),     # clear search
     (1.5, "q"),
 ]
