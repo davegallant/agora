@@ -1,10 +1,14 @@
-use crate::app::App;
+use crate::app::{App, Follow};
 use crate::live::State;
+use crate::search;
 use crate::sessions::Agent;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, Wrap};
+use ratatui::widgets::{
+    Block, Borders, Cell, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table,
+    Wrap,
+};
 use ratatui::Frame;
 use std::time::SystemTime;
 
@@ -148,10 +152,10 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
-    let block = Block::default().borders(Borders::ALL).title(" preview ");
-    let inner = block.inner(area);
-    f.render_widget(block, area);
     let Some(i) = app.selected() else {
+        let block = Block::default().borders(Borders::ALL).title(" preview ");
+        let inner = block.inner(area);
+        f.render_widget(block, area);
         f.render_widget(
             Paragraph::new("no sessions match").fg(Color::DarkGray),
             inner,
@@ -161,6 +165,8 @@ fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
 
     let s = app.sessions[i].clone();
     let live = app.live.get(&i).cloned();
+    let terms = search::terms(&app.filter);
+    let text_hit = app.text_hits.contains_key(&i);
     let mut header = vec![
         Line::from(s.title.clone()).bold(),
         Line::from(vec![
@@ -183,51 +189,85 @@ fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
         state,
         Span::raw(action).fg(Color::DarkGray),
     ]));
-    if let Some(snippet) = app.text_hits.get(&i) {
-        header.push(Line::from(vec![
-            Span::styled("match: ", Style::new().fg(Color::Yellow).bold()),
-            Span::raw(snippet.clone()),
-        ]));
-    }
-    header.push(Line::raw(""));
 
-    let header_width = inner.width.max(1) as usize;
+    // The body is laid out first: the block title reports its matches.
+    let outer = Block::default().borders(Borders::ALL).inner(area);
+    let header_width = outer.width.max(1) as usize;
     let header_rows: usize = header
         .iter()
         .map(|l| l.width().max(1).div_ceil(header_width))
-        .sum();
-    let [head_area, body_area] = Layout::vertical([
-        Constraint::Length(header_rows.min(u16::MAX as usize) as u16),
+        .sum::<usize>()
+        + 1;
+    let [head_area, rule_area, body_area] = Layout::vertical([
+        Constraint::Length(header_rows.saturating_sub(1).min(u16::MAX as usize) as u16),
+        Constraint::Length(1),
         Constraint::Min(1),
     ])
-    .areas(inner);
-    f.render_widget(Paragraph::new(header).wrap(Wrap { trim: true }), head_area);
+    .areas(outer);
+    // One column on the right for the scrollbar.
+    let text_width = body_area.width.saturating_sub(1).max(1) as usize;
+    let height = body_area.height as usize;
 
-    // Show the end of the conversation: build the text, then scroll so its
-    // last line sits at the bottom of the pane.
-    let width = body_area.width.max(1) as usize;
-    let mut lines: Vec<Line> = Vec::new();
-    for m in app.preview(i) {
-        let (prefix, style) = if m.user {
-            ("› ", Style::new().fg(Color::Yellow))
-        } else {
-            ("", Style::new())
-        };
-        for (n, l) in m.text.lines().enumerate() {
-            let p = if n == 0 { prefix } else { "  " };
-            let p = if m.user { p } else { "" };
-            lines.push(Line::styled(format!("{p}{l}"), style));
-        }
-        lines.push(Line::raw(""));
+    let pane = app.preview_pane(i, text_width);
+    let total = pane.r.rows.len();
+    let max_top = total.saturating_sub(height);
+    let top = match pane.follow {
+        Follow::Bottom => max_top,
+        Follow::Match => pane
+            .current
+            .and_then(|c| pane.r.matches.get(c))
+            .map_or(max_top, |&row| row.saturating_sub(height / 3)),
+        Follow::Top(t) => t,
     }
-    let rows: usize = lines.iter().map(|l| l.width().max(1).div_ceil(width)).sum();
-    let scroll = rows.saturating_sub(body_area.height as usize);
+    .min(max_top);
+    pane.top = top;
+    pane.height = height;
+
+    let mut title = vec![Span::raw(" preview ")];
+    if !pane.r.matches.is_empty() {
+        let cur = pane.current.map_or(0, |c| c + 1);
+        title.push(Span::styled(
+            format!(" {cur}/{} ", pane.r.matches.len()),
+            Style::new().fg(Color::Black).bg(Color::Yellow).bold(),
+        ));
+        title.push(Span::styled(" n/N ", Style::new().fg(Color::DarkGray)));
+    } else if !terms.is_empty() && text_hit {
+        title.push(Span::styled(
+            " no match shown ",
+            Style::new().fg(Color::DarkGray),
+        ));
+    }
+    if total > height {
+        let pct = (top * 100).checked_div(max_top).unwrap_or(100);
+        title.push(Span::styled(
+            format!(" {pct}% "),
+            Style::new().fg(Color::DarkGray),
+        ));
+    }
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(Line::from(title));
+    f.render_widget(block, area);
+    f.render_widget(Paragraph::new(header).wrap(Wrap { trim: true }), head_area);
     f.render_widget(
-        Paragraph::new(Text::from(lines))
-            .wrap(Wrap { trim: false })
-            .scroll((scroll.min(u16::MAX as usize) as u16, 0)),
-        body_area,
+        Paragraph::new("─".repeat(rule_area.width as usize)).fg(Color::DarkGray),
+        rule_area,
     );
+
+    let visible: Vec<Line> = pane.r.rows[top..(top + height).min(total)].to_vec();
+    f.render_widget(Paragraph::new(Text::from(visible)), body_area);
+    if total > height {
+        let mut sb = ScrollbarState::new(max_top).position(top);
+        f.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(None)
+                .end_symbol(None)
+                .thumb_style(Style::new().fg(Color::Gray))
+                .track_style(Style::new().fg(Color::DarkGray)),
+            body_area,
+            &mut sb,
+        );
+    }
 }
 
 fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
@@ -237,7 +277,7 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
         Line::from(" type to filter · enter done · esc clear").fg(Color::DarkGray)
     } else {
         Line::from(
-            " enter open · t new tab · / search · tab agent · l live only · r reload · q quit",
+            " enter open · t new tab · / search · n/N match · J/K scroll · tab agent · l live · r reload · q quit",
         )
         .fg(Color::DarkGray)
     };
@@ -285,7 +325,7 @@ mod tests {
         for want in [
             "agora",
             "Fix the login bug",
-            "› hello there",
+            "▌ hello there",
             "hi back",
             "enter open",
             "proj",

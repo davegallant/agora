@@ -3,6 +3,7 @@
 mod app;
 mod ghostty;
 mod live;
+mod preview;
 mod search;
 mod sessions;
 mod ui;
@@ -20,6 +21,8 @@ fn main() -> Result<()> {
                  enter  jump to the session's Ghostty tab, or resume it here\n\
                  t      resume in a new Ghostty tab\n\
                  /      search    tab  cycle agent    l  live only\n\
+                 J/K    scroll preview (ctrl-f/ctrl-b by page)\n\
+                 n/N    next/previous match in the preview\n\
                  r      reload    q    quit"
             );
             return Ok(());

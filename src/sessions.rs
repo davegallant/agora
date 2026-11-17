@@ -368,9 +368,11 @@ pub fn message_of(agent: Agent, v: &Value) -> Option<Msg> {
     Some(Msg { user, text })
 }
 
-/// The last `max` user/assistant text messages of a session.
-pub fn preview(s: &Session, max: usize) -> Vec<Msg> {
-    let tail = read_tail(&s.path, PREVIEW_BYTES).unwrap_or_default();
+/// The last `max` user/assistant text messages of a session. With `full`,
+/// the whole transcript is read instead of just its tail.
+pub fn preview(s: &Session, max: usize, full: bool) -> Vec<Msg> {
+    let bytes = if full { u64::MAX } else { PREVIEW_BYTES };
+    let tail = read_tail(&s.path, bytes).unwrap_or_default();
     let mut out: Vec<Msg> = json_lines(&tail)
         .filter_map(|v| message_of(s.agent, &v))
         .collect();
@@ -413,7 +415,7 @@ mod tests {
         assert_eq!(s.title, "Fix the login bug");
         assert_eq!(s.resume_argv(), ["claude", "--resume", "abc-123"]);
 
-        let msgs = preview(&s, 10);
+        let msgs = preview(&s, 10, false);
         assert_eq!(msgs.len(), 2);
         assert!(msgs[0].user && msgs[0].text == "fix   the bug");
         assert!(!msgs[1].user && msgs[1].text == "done");
@@ -449,7 +451,7 @@ mod tests {
         let s = parse_codex(&p, SystemTime::UNIX_EPOCH, &titles).unwrap();
         assert_eq!(s.title, "Reply hi");
         assert_eq!(s.resume_argv(), ["codex", "resume", "cx1"]);
-        assert_eq!(preview(&s, 10).len(), 2);
+        assert_eq!(preview(&s, 10, false).len(), 2);
 
         let sub = tmp(
             "rollout-sub.jsonl",
@@ -473,7 +475,7 @@ mod tests {
         );
         let s = parse_pi(&p, SystemTime::UNIX_EPOCH).unwrap();
         assert_eq!((s.id.as_str(), s.title.as_str()), ("pi1", "say hi"));
-        let msgs = preview(&s, 10);
+        let msgs = preview(&s, 10, false);
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[1].text, "hi");
     }

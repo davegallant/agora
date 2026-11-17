@@ -1,5 +1,6 @@
 use crate::ghostty;
 use crate::live::{self, Live, Snapshot, State};
+use crate::preview::{self, Rendered};
 use crate::search::{self, Files, Searcher};
 use crate::sessions::{self, Agent, Msg, Session};
 use anyhow::Result;
@@ -20,6 +21,30 @@ pub enum Exit {
     },
 }
 
+/// Where the preview is scrolled to; resolved to a top row at draw time.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Follow {
+    /// Pinned to the end of the conversation.
+    Bottom,
+    /// Keep the current match in view.
+    Match,
+    /// The user scrolled: this row is at the top.
+    Top(usize),
+}
+
+pub struct PreviewPane {
+    /// (session, width, filter, current match, full transcript) of `r`.
+    key: Option<(usize, usize, String, Option<usize>, bool)>,
+    pub r: Rendered,
+    session: Option<usize>,
+    filter: String,
+    pub follow: Follow,
+    pub current: Option<usize>,
+    /// The top row and height last drawn, for relative scrolling.
+    pub top: usize,
+    pub height: usize,
+}
+
 pub struct App {
     home: PathBuf,
     pub sessions: Vec<Session>,
@@ -34,7 +59,8 @@ pub struct App {
     pub agent_filter: Option<Agent>,
     pub live_only: bool,
     pub status: Option<String>,
-    previews: HashMap<usize, Vec<Msg>>,
+    previews: HashMap<(usize, bool), Vec<Msg>>,
+    pub pane: PreviewPane,
     rx: Receiver<Snapshot>,
     searcher: Searcher,
     files: Files,
@@ -82,6 +108,19 @@ impl App {
             live_only: false,
             status: None,
             previews: HashMap::new(),
+            pane: PreviewPane {
+                key: None,
+                r: Rendered {
+                    rows: Vec::new(),
+                    matches: Vec::new(),
+                },
+                session: None,
+                filter: String::new(),
+                follow: Follow::Bottom,
+                current: None,
+                top: 0,
+                height: 0,
+            },
             rx: live::spawn_poller(Duration::from_secs(2)),
             searcher: Searcher::spawn(),
             files,
@@ -132,7 +171,7 @@ impl App {
             .and_then(|k| self.view.iter().position(|&i| i == k))
             .unwrap_or(0);
         self.table
-            .select((!self.view.is_empty()).then_some(pos.min(self.view.len() - 1)));
+            .select((!self.view.is_empty()).then(|| pos.min(self.view.len() - 1)));
     }
 
     fn apply(&mut self, snap: Snapshot) {
@@ -147,6 +186,8 @@ impl App {
         self.haystacks = self.sessions.iter().map(haystack).collect();
         self.files = files_of(&self.sessions);
         self.previews.clear();
+        self.pane.key = None;
+        self.pane.session = None;
         self.filter_changed();
         self.live = live::resolve(&self.sessions, &self.last_snapshot);
         self.table.select(None);
@@ -159,10 +200,50 @@ impl App {
         self.status = Some(format!("reloaded {} sessions", self.sessions.len()));
     }
 
-    pub fn preview(&mut self, i: usize) -> &[Msg] {
-        self.previews
-            .entry(i)
-            .or_insert_with(|| sessions::preview(&self.sessions[i], 40))
+    /// Lay out session `i`'s conversation for a pane `width` columns wide.
+    /// A session that matched on its text loads in full, so the match is in it.
+    pub fn preview_pane(&mut self, i: usize, width: usize) -> &mut PreviewPane {
+        if self.pane.session != Some(i) || self.pane.filter != self.filter {
+            self.pane.session = Some(i);
+            self.pane.filter = self.filter.clone();
+            self.pane.current = None;
+            self.pane.follow = Follow::Bottom;
+        }
+        let full = self.text_hits.contains_key(&i);
+        let key = (i, width, self.filter.clone(), self.pane.current, full);
+        if self.pane.key.as_ref() != Some(&key) {
+            let terms = search::terms(&self.filter);
+            let msgs = self.previews.entry((i, full)).or_insert_with(|| {
+                sessions::preview(&self.sessions[i], if full { usize::MAX } else { 200 }, full)
+            });
+            let mut r = preview::render(msgs, &terms, width, self.pane.current);
+            // First sight of matches: start on the most recent one.
+            if self.pane.current.is_none() && !r.matches.is_empty() {
+                let last = r.matches.len() - 1;
+                r = preview::render(msgs, &terms, width, Some(last));
+                self.pane.current = Some(last);
+                self.pane.follow = Follow::Match;
+            }
+            self.pane.key = Some((i, width, self.filter.clone(), self.pane.current, full));
+            self.pane.r = r;
+        }
+        &mut self.pane
+    }
+
+    fn scroll_preview(&mut self, delta: isize) {
+        let top = self.pane.top as isize + delta;
+        self.pane.follow = Follow::Top(top.max(0) as usize);
+    }
+
+    fn jump_match(&mut self, delta: isize) {
+        let n = self.pane.r.matches.len() as isize;
+        if n == 0 {
+            self.status = Some("no matches in this preview".into());
+            return;
+        }
+        let cur = self.pane.current.map_or(n - 1, |c| c as isize);
+        self.pane.current = Some((cur + delta).rem_euclid(n) as usize);
+        self.pane.follow = Follow::Match;
     }
 
     pub fn live_count(&self) -> usize {
@@ -219,7 +300,10 @@ impl App {
                     self.filtering = false;
                     self.filter.clear();
                 }
-                KeyCode::Enter => self.filtering = false,
+                KeyCode::Enter => {
+                    self.filtering = false;
+                    return None;
+                }
                 KeyCode::Backspace => {
                     self.filter.pop();
                 }
@@ -261,6 +345,12 @@ impl App {
                 self.rebuild_view();
             }
             KeyCode::Char('r') => self.reload(),
+            KeyCode::Char('J') => self.scroll_preview(3),
+            KeyCode::Char('K') => self.scroll_preview(-3),
+            KeyCode::Char('f') if ctrl => self.scroll_preview(self.pane.height as isize - 2),
+            KeyCode::Char('b') if ctrl => self.scroll_preview(-(self.pane.height as isize - 2)),
+            KeyCode::Char('n') => self.jump_match(1),
+            KeyCode::Char('N') => self.jump_match(-1),
             KeyCode::Enter => return self.open(),
             KeyCode::Char('t') => self.open_in_new_tab(),
             _ => {}
