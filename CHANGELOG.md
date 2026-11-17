@@ -4,6 +4,13 @@ All notable changes to agora. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- `◐` marks a Claude session that has finished its turn but still has shells
+  running in the background, and the preview says how many.
+
 ## [0.4.0] - 2026-11-17
 
 ### Added
@@ -54,6 +61,7 @@ All notable changes to agora. The format follows
   sessions first, history below, a preview of the conversation, and `enter` /
   `t` to jump to, attach to, or resume a session.
 
+[Unreleased]: https://github.com/davegallant/agora/compare/v0.4.0...HEAD
 [0.4.0]: https://github.com/davegallant/agora/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/davegallant/agora/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/davegallant/agora/compare/v0.1.0...v0.2.0

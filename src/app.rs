@@ -730,6 +730,7 @@ mod tests {
             state,
             term: None,
             background: None,
+            shells: 0,
         }
     }
 

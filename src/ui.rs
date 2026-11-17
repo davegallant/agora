@@ -1,5 +1,5 @@
 use crate::app::{App, Follow};
-use crate::live::State;
+use crate::live::{Live, State};
 use crate::search;
 use crate::sessions::Agent;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -33,8 +33,16 @@ fn age(t: SystemTime) -> String {
     }
 }
 
-fn badge(state: Option<State>) -> Span<'static> {
-    match state {
+/// An open session with shells still running looks idle but isn't done.
+fn running_in_background(live: Option<&Live>) -> bool {
+    live.is_some_and(|l| l.state == State::Open && l.shells > 0)
+}
+
+fn badge(live: Option<&Live>) -> Span<'static> {
+    if running_in_background(live) {
+        return Span::styled(" ◐ ", Style::new().fg(Color::Cyan));
+    }
+    match live.map(|l| l.state) {
         Some(State::NeedsYou) => Span::styled(
             " ! ",
             Style::new().fg(Color::Black).bg(Color::Yellow).bold(),
@@ -127,14 +135,14 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
         .iter()
         .map(|&i| {
             let s = &app.sessions[i];
-            let state = app.live.get(&i).map(|l| l.state);
-            let title_style = if state.is_some() {
+            let live = app.live.get(&i);
+            let title_style = if live.is_some() {
                 Style::new().bold()
             } else {
                 Style::new()
             };
             Row::new(vec![
-                Cell::from(badge(state)),
+                Cell::from(badge(live)),
                 Cell::from(Span::styled(
                     s.agent.name(),
                     Style::new().fg(agent_color(s.agent)),
@@ -198,6 +206,14 @@ fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
     let state = match live.as_ref().map(|l| l.state) {
         Some(State::NeedsYou) => Span::styled("needs you  ", Style::new().fg(Color::Yellow).bold()),
         Some(State::Busy) => Span::styled("working  ", Style::new().fg(Color::Green)),
+        Some(State::Open) if running_in_background(live.as_ref()) => {
+            let n = live.as_ref().map_or(0, |l| l.shells);
+            let plural = if n == 1 { "" } else { "s" };
+            Span::styled(
+                format!("open · {n} shell{plural} running  "),
+                Style::new().fg(Color::Cyan),
+            )
+        }
         Some(State::Open) => Span::styled("open  ", Style::new().fg(Color::Cyan)),
         None => Span::raw(""),
     };
@@ -424,9 +440,19 @@ mod tests {
 
     #[test]
     fn badges() {
-        assert_eq!(badge(Some(State::NeedsYou)).content, " ! ");
-        assert_eq!(badge(Some(State::Busy)).content, " ● ");
-        assert_eq!(badge(Some(State::Open)).content, " ○ ");
+        let l = |state, shells| Live {
+            state,
+            term: None,
+            background: None,
+            shells,
+        };
+        assert_eq!(badge(Some(&l(State::NeedsYou, 0))).content, " ! ");
+        assert_eq!(badge(Some(&l(State::Busy, 0))).content, " ● ");
+        assert_eq!(badge(Some(&l(State::Open, 0))).content, " ○ ");
+        assert_eq!(badge(Some(&l(State::Open, 1))).content, " ◐ ");
+        // Busy and waiting sessions already show they aren't idle.
+        assert_eq!(badge(Some(&l(State::Busy, 1))).content, " ● ");
+        assert_eq!(badge(Some(&l(State::NeedsYou, 1))).content, " ! ");
         assert_eq!(badge(None).content, "   ");
     }
 
@@ -529,10 +555,26 @@ mod tests {
                         cwd: "/w/proj".into(),
                     }),
                     background: background.then(|| "bg".into()),
+                    shells: 0,
                 },
             );
             let s = screen(&mut app, 120, 20);
             assert_has(&s, &[glyph, label, action, "1 live"]);
+        }
+        for (shells, label) in [
+            (1, "open · 1 shell running"),
+            (3, "open · 3 shells running"),
+        ] {
+            app.live.insert(
+                0,
+                Live {
+                    state: State::Open,
+                    term: None,
+                    background: None,
+                    shells,
+                },
+            );
+            assert_has(&screen(&mut app, 120, 20), &[" ◐ ", label]);
         }
         app.live.clear();
         assert_has(

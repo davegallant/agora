@@ -2,6 +2,8 @@
 //!
 //! Two sources, polled on a background thread:
 //! - `claude agents --json`: running Claude sessions, interactive and background.
+//! - `ps`: shells Claude started for a session, which keep running in the
+//!   background after its turn ends.
 //! - Ghostty tab titles: agents title their tab after the session (Claude's
 //!   AI title, Codex's thread name), and Ghostty prefixes 🔔 on a bell.
 
@@ -26,18 +28,23 @@ pub struct Live {
     pub term: Option<Term>,
     /// Short id for `claude attach` when this is a background session.
     pub background: Option<String>,
+    /// Shells Claude started for this session that are still running.
+    pub shells: usize,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct ClaudeLive {
     pub background: Option<String>,
     pub state: Option<String>,
+    pub pid: Option<u32>,
 }
 
 #[derive(Default)]
 pub struct Snapshot {
     pub claude: HashMap<String, ClaudeLive>,
     pub terms: Vec<Term>,
+    /// Process id -> how many Claude shells it is the parent of.
+    pub shells: HashMap<u32, usize>,
 }
 
 fn claude_agents() -> HashMap<String, ClaudeLive> {
@@ -59,16 +66,63 @@ fn parse_agents(json: &[u8]) -> HashMap<String, ClaudeLive> {
             let background = (v["kind"] == "background")
                 .then(|| v["id"].as_str().map(String::from))
                 .flatten();
+            // Not `status`: Claude reports "busy" while a background shell
+            // runs, even after its turn has ended.
             let state = v["state"].as_str().map(String::from);
-            Some((sid, ClaudeLive { background, state }))
+            let pid = v["pid"].as_u64().and_then(|p| u32::try_from(p).ok());
+            Some((
+                sid,
+                ClaudeLive {
+                    background,
+                    state,
+                    pid,
+                },
+            ))
         })
         .collect()
 }
 
+fn claude_shells() -> HashMap<u32, usize> {
+    let Ok(out) = Command::new("ps")
+        .args(["-A", "-o", "ppid=,command="])
+        .output()
+    else {
+        return HashMap::new();
+    };
+    parse_shells(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// Count Claude's shells by parent pid in `ps -o ppid=,command=` output.
+/// Claude runs every shell command as `<shell> -c source
+/// ~/.claude/shell-snapshots/...`, which nothing else it starts (MCP servers,
+/// hooks) does.
+fn parse_shells(ps: &str) -> HashMap<u32, usize> {
+    let mut shells = HashMap::new();
+    for line in ps.lines() {
+        let Some((ppid, command)) = line.trim_start().split_once(char::is_whitespace) else {
+            continue;
+        };
+        let Ok(ppid) = ppid.parse() else {
+            continue;
+        };
+        if command.contains(" -c source ") && command.contains("/.claude/shell-snapshots/") {
+            *shells.entry(ppid).or_insert(0) += 1;
+        }
+    }
+    shells
+}
+
 pub fn snapshot() -> Snapshot {
+    let claude = claude_agents();
+    let shells = if claude.is_empty() {
+        HashMap::new()
+    } else {
+        claude_shells()
+    };
     Snapshot {
-        claude: claude_agents(),
+        claude,
         terms: ghostty::terminals(),
+        shells,
     }
 }
 
@@ -123,6 +177,7 @@ pub fn resolve(sessions: &[Session], snap: &Snapshot) -> HashMap<usize, Live> {
                     state,
                     term: Some(term.clone()),
                     background: None,
+                    shells: 0,
                 },
             );
         }
@@ -140,9 +195,15 @@ pub fn resolve(sessions: &[Session], snap: &Snapshot) -> HashMap<usize, Live> {
             state,
             term: None,
             background: None,
+            shells: 0,
         });
         entry.state = entry.state.min(state);
         entry.background = c.background.clone();
+        entry.shells = c
+            .pid
+            .and_then(|p| snap.shells.get(&p))
+            .copied()
+            .unwrap_or(0);
     }
     live
 }
@@ -194,6 +255,7 @@ mod tests {
             ClaudeLive {
                 background: Some("abcd".into()),
                 state: Some("blocked".into()),
+                pid: None,
             },
         );
 
@@ -244,6 +306,56 @@ mod tests {
         assert_eq!(a["s2"].background.as_deref(), Some("b2"));
         assert_eq!(a["s3"].background, None);
         assert_eq!(a["s4"].state, None);
+    }
+
+    #[test]
+    fn agents_json_pid_and_no_status() {
+        let a = parse_agents(
+            br#"[{"pid":29965,"sessionId":"s1","kind":"interactive","status":"busy"}]"#,
+        );
+        assert_eq!(a["s1"].state, None);
+        assert_eq!(a["s1"].pid, Some(29965));
+    }
+
+    #[test]
+    fn counts_claude_shells_by_parent() {
+        let ps = "\
+    1 /sbin/launchd
+29965 uv tool uvx pagerduty-mcp --enable-write-tools
+29965 /bin/zsh -c source /Users/me/.claude/shell-snapshots/snapshot-zsh-1-a.sh 2>/dev/null || true && eval 'sleep 45'
+29965 /bin/bash -c source /Users/me/.claude/shell-snapshots/snapshot-bash-1-b.sh && make
+87206 sleep 45
+  412 /bin/zsh -c source /Users/me/.claude/shell-snapshots/snapshot-zsh-2-c.sh
+  500 vim /Users/me/.claude/shell-snapshots/snapshot-zsh-1-a.sh
+garbage
+";
+        let shells = parse_shells(ps);
+        assert_eq!(shells.get(&29965), Some(&2));
+        assert_eq!(shells.get(&412), Some(&1));
+        assert_eq!(shells.len(), 2, "{shells:?}");
+    }
+
+    #[test]
+    fn claude_sessions_carry_their_shell_count() {
+        let sessions = vec![
+            s(Agent::Claude, "c1", "One", "/w"),
+            s(Agent::Claude, "c2", "Two", "/w"),
+        ];
+        let mut snap = Snapshot::default();
+        for (id, pid) in [("c1", 10), ("c2", 20)] {
+            snap.claude.insert(
+                id.into(),
+                ClaudeLive {
+                    state: Some("idle".into()),
+                    pid: Some(pid),
+                    ..Default::default()
+                },
+            );
+        }
+        snap.shells.insert(10, 2);
+        let live = resolve(&sessions, &snap);
+        assert_eq!(live[&0].shells, 2);
+        assert_eq!(live[&1].shells, 0);
     }
 
     #[test]
@@ -310,8 +422,8 @@ mod tests {
             ..Default::default()
         };
         let agent = |state: Option<&str>| ClaudeLive {
-            background: None,
             state: state.map(String::from),
+            ..Default::default()
         };
         // An open tab whose agent reports work in progress is busy.
         snap.claude.insert("c1".into(), agent(Some("running")));
