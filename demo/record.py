@@ -40,7 +40,9 @@ SCRIPT = [
 
 
 def main():
-    binary, home, out = sys.argv[1], Path(sys.argv[2]).resolve(), Path(sys.argv[3])
+    # Absolute: the child changes into the fake home before exec.
+    binary = str(Path(sys.argv[1]).resolve())
+    home, out = Path(sys.argv[2]).resolve(), Path(sys.argv[3])
     shims = Path(__file__).resolve().parent / "bin"
     env = {
         "HOME": str(home),
@@ -88,9 +90,13 @@ def main():
             os.write(fd, keys.encode())
     pump(1.0)
     try:
-        os.waitpid(pid, 0)
+        _, status = os.waitpid(pid, 0)
     except ChildProcessError:
-        pass
+        status = 0
+    # Never write a cast of a crash (or a failed exec) over the good one.
+    if os.waitstatus_to_exitcode(status) != 0:
+        tail = "".join(e[2] for e in events)[-2000:]
+        sys.exit(f"agora exited with status {os.waitstatus_to_exitcode(status)}:\n{tail}")
 
     header = {"version": 2, "width": COLS, "height": ROWS,
               "timestamp": int(time.time()), "title": "agora",
