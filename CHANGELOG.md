@@ -11,6 +11,11 @@ All notable changes to agora. The format follows
 - `◐` marks a Claude session that has finished its turn but still has shells
   running in the background, and the preview says how many.
 
+### Fixed
+
+- A Ghostty bell marks its session `!` again. Ghostty puts the 🔔 on the tab's
+  title, not the terminal's, so agora missed it.
+
 ## [0.4.0] - 2026-11-17
 
 ### Added

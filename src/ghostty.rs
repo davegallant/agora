@@ -62,7 +62,8 @@ fn osascript(script: &str, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// Every Ghostty terminal surface: id, title and working directory.
+/// Every Ghostty terminal surface: id, title and working directory. A bell
+/// shows only on the tab's name, so a terminal in a belled tab gets the 🔔.
 pub fn terminals() -> Vec<Term> {
     if !available() {
         return Vec::new();
@@ -76,14 +77,27 @@ tell application "Ghostty"
   repeat with t in terminals
     set out to out & (id of t) & sep & (name of t) & sep & (working directory of t) & linefeed
   end repeat
+  set bell to character id 128276
+  repeat with w in windows
+    repeat with t in tabs of w
+      if name of t starts with bell then
+        repeat with s in terminals of t
+          set out to out & bell & sep & (id of s) & linefeed
+        end repeat
+      end if
+    end repeat
+  end repeat
   return out
 end tell"#;
     parse_terminals(&osascript(SCRIPT, &[]).unwrap_or_default())
 }
 
-/// Parse the script's output: one `id<TAB>title<TAB>cwd` line per terminal.
+/// Parse the script's output: one `id<TAB>title<TAB>cwd` line per terminal,
+/// then a `🔔<TAB>id` line per terminal in a belled tab.
 fn parse_terminals(out: &str) -> Vec<Term> {
+    let belled: Vec<&str> = out.lines().filter_map(|l| l.strip_prefix("🔔\t")).collect();
     out.lines()
+        .filter(|l| !l.starts_with("🔔\t"))
         .filter_map(|l| {
             let mut f = l.splitn(3, '\t');
             Some(Term {
@@ -93,6 +107,12 @@ fn parse_terminals(out: &str) -> Vec<Term> {
             })
         })
         .filter(|t| !t.id.is_empty())
+        .map(|mut t| {
+            if belled.contains(&t.id.as_str()) && !t.title.starts_with('🔔') {
+                t.title = format!("🔔 {}", t.title);
+            }
+            t
+        })
         .collect()
 }
 
@@ -246,5 +266,13 @@ mod tests {
             ]
         );
         assert!(parse_terminals("").is_empty());
+    }
+
+    #[test]
+    fn belled_tabs_ring_their_terminals() {
+        let out = "a\t◐ Busy one\t/w\nb\tQuiet\t/w\nc\t🔔 Rung\t/w\n🔔\ta\n🔔\tc\n🔔\tgone\n";
+        let titles: Vec<String> = parse_terminals(out).into_iter().map(|t| t.title).collect();
+        assert_eq!(titles, ["🔔 ◐ Busy one", "Quiet", "🔔 Rung"]);
+        assert_eq!(parse_title(&titles[0]).1, Glyph::Bell);
     }
 }
