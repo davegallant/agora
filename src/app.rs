@@ -1,5 +1,6 @@
 use crate::ghostty;
 use crate::live::{self, Live, Snapshot, State};
+use crate::search::{self, Files, Searcher};
 use crate::sessions::{self, Agent, Msg, Session};
 use anyhow::Result;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -8,7 +9,8 @@ use ratatui::DefaultTerminal;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 pub enum Exit {
     Quit,
@@ -34,6 +36,28 @@ pub struct App {
     pub status: Option<String>,
     previews: HashMap<usize, Vec<Msg>>,
     rx: Receiver<Snapshot>,
+    searcher: Searcher,
+    files: Files,
+    search_gen: u64,
+    search_due: Option<Instant>,
+    /// Sessions whose conversation text matches the filter, with a snippet.
+    pub text_hits: HashMap<usize, String>,
+    /// (files searched, total) while a text search runs.
+    pub search_progress: Option<(usize, usize)>,
+}
+
+/// Text search starts after this pause in typing, and only for longer queries.
+const SEARCH_DELAY: Duration = Duration::from_millis(250);
+const SEARCH_MIN_CHARS: usize = 3;
+
+fn files_of(sessions: &[Session]) -> Files {
+    Arc::new(
+        sessions
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (i, s.agent, s.path.clone()))
+            .collect(),
+    )
 }
 
 fn haystack(s: &Session) -> String {
@@ -43,6 +67,7 @@ fn haystack(s: &Session) -> String {
 impl App {
     pub fn new(home: PathBuf, sessions: Vec<Session>) -> Self {
         let haystacks = sessions.iter().map(haystack).collect();
+        let files = files_of(&sessions);
         let mut app = App {
             home,
             sessions,
@@ -58,6 +83,12 @@ impl App {
             status: None,
             previews: HashMap::new(),
             rx: live::spawn_poller(Duration::from_secs(2)),
+            searcher: Searcher::spawn(),
+            files,
+            search_gen: 0,
+            search_due: None,
+            text_hits: HashMap::new(),
+            search_progress: None,
         };
         app.rebuild_view();
         app
@@ -90,7 +121,8 @@ impl App {
                 let s = &self.sessions[i];
                 self.agent_filter.is_none_or(|a| a == s.agent)
                     && (!self.live_only || self.live.contains_key(&i))
-                    && terms.iter().all(|t| self.haystacks[i].contains(t.as_str()))
+                    && (terms.iter().all(|t| self.haystacks[i].contains(t.as_str()))
+                        || self.text_hits.contains_key(&i))
             })
             .collect();
         // Sessions are newest first already; a stable sort keeps that within a rank.
@@ -113,7 +145,9 @@ impl App {
         let keep = self.selected().map(|i| self.sessions[i].path.clone());
         self.sessions = sessions::load_all(&self.home);
         self.haystacks = self.sessions.iter().map(haystack).collect();
+        self.files = files_of(&self.sessions);
         self.previews.clear();
+        self.filter_changed();
         self.live = live::resolve(&self.sessions, &self.last_snapshot);
         self.table.select(None);
         self.rebuild_view();
@@ -145,6 +179,7 @@ impl App {
             if let Some(s) = latest {
                 self.apply(s);
             }
+            self.poll_search();
             if event::poll(Duration::from_millis(200))? {
                 if let Event::Key(k) = event::read()? {
                     if k.kind == KeyEventKind::Press {
@@ -192,7 +227,7 @@ impl App {
                 KeyCode::Char(c) => self.filter.push(c),
                 _ => return None,
             }
-            self.rebuild_view();
+            self.filter_changed();
             return None;
         }
         self.status = None;
@@ -200,7 +235,7 @@ impl App {
             KeyCode::Char('q') => return Some(Exit::Quit),
             KeyCode::Esc if !self.filter.is_empty() => {
                 self.filter.clear();
-                self.rebuild_view();
+                self.filter_changed();
             }
             KeyCode::Esc => return Some(Exit::Quit),
             KeyCode::Char('j') => return self.nav(1),
@@ -231,6 +266,43 @@ impl App {
             _ => {}
         }
         None
+    }
+
+    /// Title matches update immediately; the text search is debounced.
+    fn filter_changed(&mut self) {
+        self.search_gen += 1;
+        self.searcher.cancel(self.search_gen);
+        self.text_hits.clear();
+        self.search_progress = None;
+        let long_enough = self.filter.trim().chars().count() >= SEARCH_MIN_CHARS;
+        self.search_due = long_enough.then(|| Instant::now() + SEARCH_DELAY);
+        self.rebuild_view();
+    }
+
+    fn poll_search(&mut self) {
+        if self.search_due.is_some_and(|t| Instant::now() >= t) {
+            self.search_due = None;
+            self.search_progress = Some((0, self.files.len()));
+            self.searcher.start(
+                self.search_gen,
+                search::terms(&self.filter),
+                self.files.clone(),
+            );
+        }
+        let mut changed = false;
+        while let Ok(p) = self.searcher.results.try_recv() {
+            if p.generation != self.search_gen {
+                continue;
+            }
+            self.search_progress = (!p.finished).then_some((p.done, p.total));
+            for h in p.hits {
+                self.text_hits.insert(h.idx, h.snippet);
+                changed = true;
+            }
+        }
+        if changed {
+            self.rebuild_view();
+        }
     }
 
     fn nav(&mut self, delta: isize) -> Option<Exit> {

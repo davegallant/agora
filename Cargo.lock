@@ -7,6 +7,7 @@ name = "agora"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "memchr",
  "ratatui",
  "serde_json",
 ]

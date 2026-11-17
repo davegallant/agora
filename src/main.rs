@@ -3,6 +3,7 @@
 mod app;
 mod ghostty;
 mod live;
+mod search;
 mod sessions;
 mod ui;
 
@@ -40,6 +41,37 @@ fn main() -> Result<()> {
                 .get(&i)
                 .map_or("-".into(), |l| format!("{:?}", l.state));
             println!("{state}\t{}\t{}\t{}", s.agent.name(), s.project(), s.title);
+        }
+        return Ok(());
+    }
+
+    // Search conversation text from the shell: `agora --search "tfc plan"`.
+    if std::env::args().nth(1).as_deref() == Some("--search") {
+        let query: Vec<String> = std::env::args().skip(2).collect();
+        let terms = search::terms(&query.join(" "));
+        let searcher = search::Searcher::spawn();
+        let files = std::sync::Arc::new(
+            sessions
+                .iter()
+                .enumerate()
+                .map(|(i, s)| (i, s.agent, s.path.clone()))
+                .collect(),
+        );
+        searcher.start(1, terms, files);
+        while let Ok(p) = searcher.results.recv() {
+            for h in p.hits {
+                let s = &sessions[h.idx];
+                println!(
+                    "{}\t{}\t{}\t{}",
+                    s.agent.name(),
+                    s.project(),
+                    s.title,
+                    h.snippet
+                );
+            }
+            if p.finished {
+                break;
+            }
         }
         return Ok(());
     }

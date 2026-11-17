@@ -5,7 +5,10 @@ now, and everything you can resume, across **Claude Code**, **Codex** and **pi**
 
 - **Live at the top.** Sessions that need you (a 🔔 on their Ghostty tab, or a
   blocked Claude background agent) come first, then ones that are working or open.
-- **History underneath**, newest first, searchable by title, project, path or agent.
+- **History underneath**, newest first.
+- **Search** by title, project, path or agent as you type, and through the
+  conversation text itself a moment later, with the matching passage shown in
+  the preview. Every word must match; tool output and file contents don't count.
 - **Preview** of the end of the conversation for the selected session.
 - **Enter** jumps to the session's Ghostty tab if it is open, attaches to a
   background Claude agent, or resumes the session here in its own directory.
@@ -21,14 +24,15 @@ still lists and resumes sessions.
 | --- | --- |
 | `enter` | jump to tab / attach / resume here |
 | `t` | resume (or attach) in a new Ghostty tab |
-| `/` | search; `esc` clears |
+| `/` | search titles and conversation text; `esc` clears |
 | `tab` | cycle agent: all, claude, codex, pi |
 | `l` | live sessions only |
 | `j` `k` `↑` `↓` `g` `G` | move |
 | `r` | reload sessions from disk |
 | `q` | quit |
 
-`agora --list` prints live sessions and recent history as tab-separated text.
+`agora --list` prints live sessions and recent history as tab-separated text, and
+`agora --search <words>` prints sessions whose conversation text matches.
 
 ## Where sessions come from
 

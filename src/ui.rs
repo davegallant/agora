@@ -82,6 +82,17 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
             } else {
                 Span::raw("")
             },
+            match app.search_progress {
+                Some((done, total)) => Span::styled(
+                    format!("   searching conversations {done}/{total}"),
+                    Style::new().fg(Color::DarkGray),
+                ),
+                None if !app.text_hits.is_empty() => Span::styled(
+                    format!("   {} match in conversation text", app.text_hits.len()),
+                    Style::new().fg(Color::DarkGray),
+                ),
+                None => Span::raw(""),
+            },
         ])
     } else {
         Line::from(Span::styled(
@@ -172,11 +183,24 @@ fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
         state,
         Span::raw(action).fg(Color::DarkGray),
     ]));
+    if let Some(snippet) = app.text_hits.get(&i) {
+        header.push(Line::from(vec![
+            Span::styled("match: ", Style::new().fg(Color::Yellow).bold()),
+            Span::raw(snippet.clone()),
+        ]));
+    }
     header.push(Line::raw(""));
 
-    let [head_area, body_area] =
-        Layout::vertical([Constraint::Length(header.len() as u16), Constraint::Min(1)])
-            .areas(inner);
+    let header_width = inner.width.max(1) as usize;
+    let header_rows: usize = header
+        .iter()
+        .map(|l| l.width().max(1).div_ceil(header_width))
+        .sum();
+    let [head_area, body_area] = Layout::vertical([
+        Constraint::Length(header_rows.min(u16::MAX as usize) as u16),
+        Constraint::Min(1),
+    ])
+    .areas(inner);
     f.render_widget(Paragraph::new(header).wrap(Wrap { trim: true }), head_area);
 
     // Show the end of the conversation: build the text, then scroll so its

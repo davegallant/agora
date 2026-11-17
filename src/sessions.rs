@@ -334,48 +334,46 @@ pub fn load_all(home: &Path) -> Vec<Session> {
     sessions
 }
 
+/// The user or assistant text carried by one transcript line, if any.
+pub fn message_of(agent: Agent, v: &Value) -> Option<Msg> {
+    let (role, content) = match agent {
+        Agent::Claude => {
+            if v["isMeta"].as_bool() == Some(true) {
+                return None;
+            }
+            (v["type"].as_str()?, &v["message"]["content"])
+        }
+        Agent::Codex => {
+            if v["type"] != "response_item" || v["payload"]["type"] != "message" {
+                return None;
+            }
+            (v["payload"]["role"].as_str()?, &v["payload"]["content"])
+        }
+        Agent::Pi => {
+            if v["type"] != "message" {
+                return None;
+            }
+            (v["message"]["role"].as_str()?, &v["message"]["content"])
+        }
+    };
+    let user = match role {
+        "user" => true,
+        "assistant" => false,
+        _ => return None,
+    };
+    let text = content_text(content).trim().to_string();
+    if text.is_empty() || (user && is_noise(&text)) {
+        return None;
+    }
+    Some(Msg { user, text })
+}
+
 /// The last `max` user/assistant text messages of a session.
 pub fn preview(s: &Session, max: usize) -> Vec<Msg> {
     let tail = read_tail(&s.path, PREVIEW_BYTES).unwrap_or_default();
-    let mut out = Vec::new();
-    for v in json_lines(&tail) {
-        let (role, content) = match s.agent {
-            Agent::Claude => {
-                if v["isMeta"].as_bool() == Some(true) {
-                    continue;
-                }
-                (v["type"].as_str().unwrap_or(""), &v["message"]["content"])
-            }
-            Agent::Codex => {
-                if v["type"] != "response_item" || v["payload"]["type"] != "message" {
-                    continue;
-                }
-                (
-                    v["payload"]["role"].as_str().unwrap_or(""),
-                    &v["payload"]["content"],
-                )
-            }
-            Agent::Pi => {
-                if v["type"] != "message" {
-                    continue;
-                }
-                (
-                    v["message"]["role"].as_str().unwrap_or(""),
-                    &v["message"]["content"],
-                )
-            }
-        };
-        let user = match role {
-            "user" => true,
-            "assistant" => false,
-            _ => continue,
-        };
-        let text = content_text(content).trim().to_string();
-        if text.is_empty() || (user && is_noise(&text)) {
-            continue;
-        }
-        out.push(Msg { user, text });
-    }
+    let mut out: Vec<Msg> = json_lines(&tail)
+        .filter_map(|v| message_of(s.agent, &v))
+        .collect();
     let keep = out.len().saturating_sub(max);
     out.split_off(keep)
 }
