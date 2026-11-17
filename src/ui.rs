@@ -49,7 +49,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let [main, footer] =
         Layout::vertical([Constraint::Min(3), Constraint::Length(1)]).areas(f.area());
     let [list, preview] =
-        Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)]).areas(main);
+        Layout::vertical([Constraint::Percentage(45), Constraint::Percentage(55)]).areas(main);
+    app.list_area = list;
+    app.preview_area = preview;
     draw_list(f, app, list);
     draw_preview(f, app, preview);
     draw_footer(f, app, footer);

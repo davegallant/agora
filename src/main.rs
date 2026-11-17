@@ -9,6 +9,8 @@ mod sessions;
 mod ui;
 
 use anyhow::{anyhow, Context, Result};
+use ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+use ratatui::crossterm::execute;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
@@ -80,7 +82,10 @@ fn main() -> Result<()> {
     }
 
     let mut terminal = ratatui::init();
+    // Mouse capture lets the wheel scroll the panes; shift-drag still selects text.
+    let _ = execute!(std::io::stdout(), EnableMouseCapture);
     let result = app::App::new(home, sessions).run(&mut terminal);
+    let _ = execute!(std::io::stdout(), DisableMouseCapture);
     ratatui::restore();
 
     match result? {

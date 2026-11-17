@@ -4,7 +4,10 @@ use crate::preview::{self, Rendered};
 use crate::search::{self, Files, Searcher};
 use crate::sessions::{self, Agent, Msg, Session};
 use anyhow::Result;
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{
+    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
+};
+use ratatui::layout::{Position, Rect};
 use ratatui::widgets::TableState;
 use ratatui::DefaultTerminal;
 use std::collections::HashMap;
@@ -61,6 +64,9 @@ pub struct App {
     pub status: Option<String>,
     previews: HashMap<(usize, bool), Vec<Msg>>,
     pub pane: PreviewPane,
+    /// Where the list and preview were last drawn, for routing the mouse wheel.
+    pub list_area: Rect,
+    pub preview_area: Rect,
     rx: Receiver<Snapshot>,
     searcher: Searcher,
     files: Files,
@@ -123,6 +129,8 @@ impl App {
                 top: 0,
                 height: 0,
             },
+            list_area: Rect::default(),
+            preview_area: Rect::default(),
             rx: live::spawn_poller(Duration::from_secs(2)),
             searcher: Searcher::spawn(),
             files,
@@ -278,14 +286,31 @@ impl App {
             // Redraw faster while the spinner is animating.
             let tick = if self.searching() { 80 } else { 200 };
             if event::poll(Duration::from_millis(tick))? {
-                if let Event::Key(k) = event::read()? {
-                    if k.kind == KeyEventKind::Press {
+                match event::read()? {
+                    Event::Key(k) if k.kind == KeyEventKind::Press => {
                         if let Some(exit) = self.on_key(k) {
                             return Ok(exit);
                         }
                     }
+                    Event::Mouse(m) => self.on_mouse(m),
+                    _ => {}
                 }
             }
+        }
+    }
+
+    /// The wheel scrolls whichever pane it is over.
+    fn on_mouse(&mut self, m: MouseEvent) {
+        let delta = match m.kind {
+            MouseEventKind::ScrollDown => 1,
+            MouseEventKind::ScrollUp => -1,
+            _ => return,
+        };
+        let at = Position::new(m.column, m.row);
+        if self.preview_area.contains(at) {
+            self.scroll_preview(3 * delta);
+        } else if self.list_area.contains(at) {
+            self.move_by(delta);
         }
     }
 
