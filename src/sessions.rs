@@ -463,7 +463,7 @@ mod tests {
         // Let the watcher take its first look before anything changes.
         std::thread::sleep(Duration::from_millis(100));
 
-        fs::write(dir.join("new.jsonl"), format!("{line}\n")).unwrap();
+        put(&dir.join("new.jsonl"), &[line], None);
         let c = wait();
         assert_eq!(c.updated.len(), 1);
         assert_eq!(c.updated[0].id, "new");
@@ -592,6 +592,19 @@ mod tests {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         let body: String = lines.iter().map(|l| format!("{l}\n")).collect();
         fs::write(path, body).unwrap();
+    }
+
+    /// Write `lines` to `path` in one step, as a watcher sees it: written
+    /// and dated under another name, then renamed into place. A watcher
+    /// looking mid-write would date the file before the write lands and
+    /// report it again on its next look.
+    fn put(path: &Path, lines: &[&str], mtime: Option<u64>) {
+        let tmp = path.with_extension("tmp");
+        write(&tmp, lines);
+        if let Some(secs) = mtime {
+            set_mtime(&tmp, secs);
+        }
+        fs::rename(&tmp, path).unwrap();
     }
 
     fn set_mtime(path: &Path, secs: u64) {
@@ -1040,22 +1053,21 @@ mod tests {
         let wait = || rx.recv_timeout(Duration::from_secs(5)).unwrap();
         std::thread::sleep(Duration::from_millis(100));
 
-        write(
+        put(
             &path,
             &[
                 r#"{"type":"user","cwd":"/w","message":{"content":"before"}}"#,
                 r#"{"type":"ai-title","aiTitle":"After"}"#,
             ],
+            Some(2000),
         );
-        set_mtime(&path, 2000);
         let c = wait();
         assert_eq!(c.updated.len(), 1);
         assert_eq!(c.updated[0].title, "After");
         assert!(c.removed.is_empty());
 
         // Still on disk, but no longer a session: reported as removed.
-        write(&path, &["not a session"]);
-        set_mtime(&path, 3000);
+        put(&path, &["not a session"], Some(3000));
         let c = wait();
         assert!(c.updated.is_empty());
         assert_eq!(c.removed, vec![path.clone()]);
@@ -1071,9 +1083,12 @@ mod tests {
             &home.join(".codex/session_index.jsonl"),
             &[r#"{"id":"x9","thread_name":"Named"}"#],
         );
-        write(
-            &home.join(".codex/sessions/2026/02/03/rollout-9.jsonl"),
+        let rollout = home.join(".codex/sessions/2026/02/03/rollout-9.jsonl");
+        fs::create_dir_all(rollout.parent().unwrap()).unwrap();
+        put(
+            &rollout,
             &[r#"{"type":"session_meta","payload":{"id":"x9","cwd":"/w"}}"#],
+            None,
         );
         let c = rx.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(c.updated.len(), 1);
