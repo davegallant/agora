@@ -1,0 +1,4 @@
+#!/bin/sh
+# Stand-in for `claude agents --json` during the demo recording.
+[ "$1" = agents ] && exec cat "$HOME/agents.json"
+exit 1

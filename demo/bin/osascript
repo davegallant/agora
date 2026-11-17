@@ -1,0 +1,3 @@
+#!/bin/sh
+# Keep the demo away from the real Ghostty: report no open tabs.
+cat >/dev/null

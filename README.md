@@ -3,6 +3,8 @@
 One terminal UI for your AI coding agent sessions: everything that is running
 now, and everything you can resume, across **Claude Code**, **Codex** and **pi**.
 
+![agora demo](demo/agora.gif)
+
 - **Live at the top.** Sessions that need you (a 🔔 on their Ghostty tab, or a
   blocked Claude background agent) come first, then ones that are working or open.
 - **History underneath**, newest first.
@@ -49,4 +51,10 @@ nix run github:davegallant/agora
 ```
 
 or add `github:davegallant/agora` as a flake input and install
-`agora.packages.${system}.default`. Development: `nix develop`, then `cargo test`.
+`agora.packages.${system}.default`. Development: `nix develop`, then `cargo test`. To try your changes against made-up sessions
+(your real ones are untouched): `nix develop -c demo/try.sh`.
+
+The demo above is recorded from made-up sessions: `demo/render.sh` seeds a fake
+`$HOME`, drives agora through a scripted run and renders the asciinema cast to a
+GIF with [agg](https://github.com/asciinema/agg). The `demo` workflow re-records
+it when `src/` changes and opens a PR with the result.
