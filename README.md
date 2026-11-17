@@ -48,6 +48,17 @@ still lists and resumes sessions.
 
 ## Install
 
+On macOS or Linux (arm64 or x86_64), from the latest release:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/davegallant/agora/main/install.sh | sh
+```
+
+It installs to `~/.local/bin`; set `AGORA_INSTALL_DIR` to change that, or
+`AGORA_VERSION` (e.g. `v0.2.0`) to pick a release.
+
+With Nix:
+
 ```sh
 nix run github:davegallant/agora
 ```
@@ -59,4 +70,4 @@ or add `github:davegallant/agora` as a flake input and install
 The demo above is recorded from made-up sessions: `demo/render.sh` seeds a fake
 `$HOME`, drives agora through a scripted run and renders the asciinema cast to a
 GIF with [agg](https://github.com/asciinema/agg). The `demo` workflow re-records
-it when `src/` changes and opens a PR with the result.
+it when `src/` changes and commits the result to `main`.
