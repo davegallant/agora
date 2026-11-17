@@ -729,9 +729,9 @@ mod tests {
         assert_has(&s, &[" 1/40 ", "▶ question 0 "]);
         // The scrollbar ticks every match and marks the current one.
         assert_has(&s, &["━", "◆"]);
-        // Every word of the filter is highlighted on its own.
+        // The filter matches as one phrase: question 1 and 10-19.
         app.filter = "question 1".into();
-        assert_has(&screen(&mut app, 80, 24), &[" 53/53 "]);
+        assert_has(&screen(&mut app, 80, 24), &[" 11/11 "]);
     }
 
     #[test]

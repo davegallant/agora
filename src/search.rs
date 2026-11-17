@@ -39,12 +39,16 @@ pub struct Searcher {
     current: Arc<AtomicU64>,
 }
 
-/// Search terms: lowercase, whitespace-separated, all must match.
+/// Search terms: the whole query as one lowercase phrase, so "redis cache"
+/// matches those words together, not each word on its own. Runs of
+/// whitespace collapse to one space.
 pub fn terms(query: &str) -> Vec<String> {
-    query
-        .split_whitespace()
-        .map(|t| t.to_ascii_lowercase())
-        .collect()
+    let phrase = query.split_whitespace().collect::<Vec<_>>().join(" ");
+    if phrase.is_empty() {
+        Vec::new()
+    } else {
+        vec![phrase.to_ascii_lowercase()]
+    }
 }
 
 fn floor_boundary(s: &str, mut i: usize) -> usize {
@@ -248,8 +252,8 @@ mod tests {
         let p = file("c.jsonl", CLAUDE);
         let snip = search_file(&p, Agent::Claude, &terms("tfc PLAN")).unwrap();
         assert!(snip.contains("TFC plan"), "{snip}");
-        // Terms may come from different messages.
-        assert!(search_file(&p, Agent::Claude, &terms("drifted tfc")).is_some());
+        // The query is one phrase: its words must appear together.
+        assert!(search_file(&p, Agent::Claude, &terms("drifted tfc")).is_none());
         // Tool input is not conversation text.
         assert!(search_file(&p, Agent::Claude, &terms("secret-term")).is_none());
         assert!(search_file(&p, Agent::Claude, &terms("nowhere")).is_none());
@@ -303,8 +307,8 @@ mod tests {
     }
 
     #[test]
-    fn terms_are_lowercase_words() {
-        assert_eq!(terms("  Foo   BAR\tbaz "), ["foo", "bar", "baz"]);
+    fn terms_are_one_lowercase_phrase() {
+        assert_eq!(terms("  Foo   BAR\tbaz "), ["foo bar baz"]);
         assert!(terms("").is_empty());
         assert!(terms("   ").is_empty());
         // Only ASCII is folded, matching the byte search.
@@ -366,14 +370,14 @@ mod tests {
         let p = file(
             "order.jsonl",
             concat!(
-                r#"{"type":"user","message":{"content":"first mentions beta"}}"#,
+                r#"{"type":"user","message":{"content":"first mentions alpha beta"}}"#,
                 "\n",
-                r#"{"type":"assistant","message":{"content":"then alpha shows up"}}"#,
+                r#"{"type":"assistant","message":{"content":"then alpha beta again"}}"#,
                 "\n",
             ),
         );
         let snip = search_file(&p, Agent::Claude, &terms("alpha beta")).unwrap();
-        assert_eq!(snip, "first mentions beta");
+        assert_eq!(snip, "first mentions alpha beta");
     }
 
     #[test]

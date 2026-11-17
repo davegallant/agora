@@ -20,6 +20,11 @@ All notable changes to agora. The format follows
 ### Changed
 
 - The footer shows only the main keys; the rest are behind `?`.
+- Conversation search matches the whole query as one phrase: `redis cache`
+  finds those words together, not each word on its own. The title filter
+  still matches each word anywhere.
+- The preview highlights only the current match, marks its row with `▶`, and
+  ticks every match on the scrollbar.
 
 ### Fixed
 
