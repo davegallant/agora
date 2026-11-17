@@ -8,6 +8,8 @@ now, and everything you can resume, across **Claude Code**, **Codex** and **pi**
 - **Live at the top.** Sessions that need you (a 🔔 on their Ghostty tab, or a
   blocked Claude background agent) come first, then ones that are working or open.
 - **History underneath**, newest first.
+- **Refreshes as you work.** New sessions appear and busy ones move up on their
+  own, and the preview follows a conversation as it is written.
 - **Search** by title, project, path or agent as you type, and through the
   conversation text itself a moment later, with the matching passage shown in
   the preview. Every word must match; tool output and file contents don't count.
@@ -30,7 +32,7 @@ still lists and resumes sessions.
 | `tab` | cycle agent: all, claude, codex, pi |
 | `l` | live sessions only |
 | `j` `k` `↑` `↓` `g` `G` | move |
-| `r` | reload sessions from disk |
+| `r` | reload every session from disk |
 | `q` | quit |
 
 `agora --list` prints live sessions and recent history as tab-separated text, and

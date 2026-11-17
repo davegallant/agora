@@ -13,7 +13,8 @@ use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::sync::mpsc::Receiver;
+use std::time::{Duration, SystemTime};
 
 const HEAD_BYTES: u64 = 128 * 1024;
 const TAIL_BYTES: u64 = 64 * 1024;
@@ -293,8 +294,12 @@ fn jsonl_files(dir: &Path, depth: usize, out: &mut Vec<(PathBuf, SystemTime)>) {
     }
 }
 
-pub fn load_all(home: &Path) -> Vec<Session> {
-    let mut jobs: Vec<(Agent, PathBuf, SystemTime)> = Vec::new();
+/// A transcript file: whose it is, where, and when it last changed.
+type Transcript = (Agent, PathBuf, SystemTime);
+
+/// Every transcript file on disk. Only directories are read, not the files.
+fn scan(home: &Path) -> Vec<Transcript> {
+    let mut out = Vec::new();
     for (agent, dir, depth) in [
         (Agent::Claude, home.join(".claude/projects"), 1),
         (Agent::Codex, home.join(".codex/sessions"), 3),
@@ -302,8 +307,21 @@ pub fn load_all(home: &Path) -> Vec<Session> {
     ] {
         let mut files = Vec::new();
         jsonl_files(&dir, depth, &mut files);
-        jobs.extend(files.into_iter().map(|(p, m)| (agent, p, m)));
+        out.extend(files.into_iter().map(|(p, m)| (agent, p, m)));
     }
+    out
+}
+
+fn parse((agent, path, mtime): &Transcript, titles: &HashMap<String, String>) -> Option<Session> {
+    match agent {
+        Agent::Claude => parse_claude(path, *mtime),
+        Agent::Codex => parse_codex(path, *mtime, titles),
+        Agent::Pi => parse_pi(path, *mtime),
+    }
+}
+
+pub fn load_all(home: &Path) -> Vec<Session> {
+    let jobs = scan(home);
     let titles = codex_titles(home);
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
     let chunk = jobs.len().div_ceil(threads).max(1);
@@ -316,11 +334,7 @@ pub fn load_all(home: &Path) -> Vec<Session> {
                 scope.spawn(move || {
                     batch
                         .iter()
-                        .filter_map(|(agent, path, mtime)| match agent {
-                            Agent::Claude => parse_claude(path, *mtime),
-                            Agent::Codex => parse_codex(path, *mtime, titles),
-                            Agent::Pi => parse_pi(path, *mtime),
-                        })
+                        .filter_map(|t| parse(t, titles))
                         .collect::<Vec<_>>()
                 })
             })
@@ -332,6 +346,58 @@ pub fn load_all(home: &Path) -> Vec<Session> {
     });
     sessions.sort_by_key(|s| std::cmp::Reverse(s.mtime));
     sessions
+}
+
+/// Transcripts written or removed since the last look.
+#[derive(Debug, Default)]
+pub struct Changes {
+    /// New sessions, and existing ones re-read because their file changed.
+    pub updated: Vec<Session>,
+    /// Transcripts that are gone, or no longer read as a session.
+    pub removed: Vec<PathBuf>,
+}
+
+/// Watch the transcript directories, sending what changed. Only files whose
+/// modification time moved are re-read, so this is cheap to run often.
+pub fn spawn_watcher(home: PathBuf, every: Duration) -> Receiver<Changes> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut known: HashMap<PathBuf, SystemTime> =
+            scan(&home).into_iter().map(|(_, p, m)| (p, m)).collect();
+        loop {
+            std::thread::sleep(every);
+            let now = scan(&home);
+            let changed: Vec<&Transcript> = now
+                .iter()
+                .filter(|(_, p, m)| known.get(p) != Some(m))
+                .collect();
+            let mut removed: Vec<PathBuf> = known
+                .keys()
+                .filter(|p| !now.iter().any(|(_, q, _)| q == *p))
+                .cloned()
+                .collect();
+            if changed.is_empty() && removed.is_empty() {
+                continue;
+            }
+            let titles = if changed.iter().any(|(a, _, _)| *a == Agent::Codex) {
+                codex_titles(&home)
+            } else {
+                HashMap::new()
+            };
+            let mut updated = Vec::new();
+            for t in changed {
+                match parse(t, &titles) {
+                    Some(s) => updated.push(s),
+                    None => removed.push(t.1.clone()),
+                }
+            }
+            known = now.into_iter().map(|(_, p, m)| (p, m)).collect();
+            if tx.send(Changes { updated, removed }).is_err() {
+                return;
+            }
+        }
+    });
+    rx
 }
 
 /// The user or assistant text carried by one transcript line, if any.
@@ -384,6 +450,32 @@ pub fn preview(s: &Session, max: usize, full: bool) -> Vec<Msg> {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn watcher_reports_new_and_removed_transcripts() {
+        let home = std::env::temp_dir().join(format!("agora-watch-{}", std::process::id()));
+        let dir = home.join(".claude/projects/-w-proj");
+        fs::create_dir_all(&dir).unwrap();
+        let line = r#"{"type":"user","cwd":"/w/proj","message":{"content":"first prompt"}}"#;
+        fs::write(dir.join("old.jsonl"), format!("{line}\n")).unwrap();
+        let rx = spawn_watcher(home.clone(), Duration::from_millis(20));
+        let wait = || rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        // Let the watcher take its first look before anything changes.
+        std::thread::sleep(Duration::from_millis(100));
+
+        fs::write(dir.join("new.jsonl"), format!("{line}\n")).unwrap();
+        let c = wait();
+        assert_eq!(c.updated.len(), 1);
+        assert_eq!(c.updated[0].id, "new");
+        assert_eq!(c.updated[0].title, "first prompt");
+        assert!(c.removed.is_empty());
+
+        fs::remove_file(dir.join("old.jsonl")).unwrap();
+        let c = wait();
+        assert!(c.updated.is_empty());
+        assert_eq!(c.removed, vec![dir.join("old.jsonl")]);
+        fs::remove_dir_all(&home).unwrap();
+    }
 
     fn tmp(name: &str, lines: &[&str]) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("agora-test-{}", std::process::id()));

@@ -2,7 +2,7 @@ use crate::ghostty;
 use crate::live::{self, Live, Snapshot, State};
 use crate::preview::{self, Rendered};
 use crate::search::{self, Files, Searcher};
-use crate::sessions::{self, Agent, Msg, Session};
+use crate::sessions::{self, Agent, Changes, Msg, Session};
 use anyhow::Result;
 use ratatui::crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
@@ -10,6 +10,7 @@ use ratatui::crossterm::event::{
 use ratatui::layout::{Position, Rect};
 use ratatui::widgets::TableState;
 use ratatui::DefaultTerminal;
+use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
@@ -68,6 +69,8 @@ pub struct App {
     pub list_area: Rect,
     pub preview_area: Rect,
     rx: Receiver<Snapshot>,
+    /// Transcripts written or removed on disk.
+    watch: Receiver<Changes>,
     searcher: Searcher,
     files: Files,
     search_gen: u64,
@@ -102,6 +105,7 @@ impl App {
     pub fn new(home: PathBuf, sessions: Vec<Session>) -> Self {
         let haystacks = sessions.iter().map(haystack).collect();
         let files = files_of(&sessions);
+        let watch = sessions::spawn_watcher(home.clone(), Duration::from_secs(2));
         let mut app = App {
             home,
             sessions,
@@ -132,6 +136,7 @@ impl App {
             list_area: Rect::default(),
             preview_area: Rect::default(),
             rx: live::spawn_poller(Duration::from_secs(2)),
+            watch,
             searcher: Searcher::spawn(),
             files,
             search_gen: 0,
@@ -175,8 +180,7 @@ impl App {
                         || self.text_hits.contains_key(&i))
             })
             .collect();
-        // Sessions are newest first already; a stable sort keeps that within a rank.
-        view.sort_by_key(|&i| self.rank(i));
+        view.sort_by_key(|&i| (self.rank(i), Reverse(self.sessions[i].mtime)));
         self.view = view;
         let pos = keep
             .and_then(|k| self.view.iter().position(|&i| i == k))
@@ -209,6 +213,45 @@ impl App {
             }
         }
         self.status = Some(format!("reloaded {} sessions", self.sessions.len()));
+    }
+
+    /// Fold in transcripts that changed on disk. Sessions keep their index, so
+    /// the selection, preview scroll and search hits stay with them; a
+    /// session that is still being written moves up the list and its preview
+    /// shows the new messages.
+    fn merge(&mut self, c: Changes) {
+        let index = |sessions: &[Session], p: &Path| sessions.iter().position(|s| s.path == p);
+        // Removing one would shift every index after it: start over instead.
+        if c.removed.iter().any(|p| index(&self.sessions, p).is_some()) {
+            self.reload();
+            return;
+        }
+        if c.updated.is_empty() {
+            return;
+        }
+        for s in c.updated {
+            let h = haystack(&s);
+            let i = match index(&self.sessions, &s.path) {
+                Some(i) => {
+                    self.sessions[i] = s;
+                    self.haystacks[i] = h;
+                    i
+                }
+                None => {
+                    self.sessions.push(s);
+                    self.haystacks.push(h);
+                    self.sessions.len() - 1
+                }
+            };
+            self.previews.remove(&(i, false));
+            self.previews.remove(&(i, true));
+            if self.pane.session == Some(i) {
+                self.pane.key = None;
+            }
+        }
+        self.files = files_of(&self.sessions);
+        self.live = live::resolve(&self.sessions, &self.last_snapshot);
+        self.rebuild_view();
     }
 
     /// Lay out session `i`'s conversation for a pane `width` columns wide.
@@ -281,6 +324,9 @@ impl App {
             }
             if let Some(s) = latest {
                 self.apply(s);
+            }
+            while let Ok(c) = self.watch.try_recv() {
+                self.merge(c);
             }
             self.poll_search();
             // Redraw faster while the spinner is animating.
@@ -486,5 +532,61 @@ impl App {
             Ok(()) => format!("opened “{}” in a new tab", s.title),
             Err(e) => format!("could not open tab: {e}"),
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::SystemTime;
+
+    fn session(id: &str, title: &str, age_secs: u64) -> Session {
+        Session {
+            agent: Agent::Claude,
+            id: id.into(),
+            path: PathBuf::from(format!("/nonexistent/{id}.jsonl")),
+            cwd: "/w/proj".into(),
+            title: title.into(),
+            mtime: SystemTime::now() - Duration::from_secs(age_secs),
+        }
+    }
+
+    fn titles(app: &App) -> Vec<&str> {
+        app.view
+            .iter()
+            .map(|&i| app.sessions[i].title.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn merge_moves_written_sessions_up_and_keeps_the_selection() {
+        let mut app = App::new(
+            PathBuf::from("/nonexistent"),
+            vec![session("b", "Bravo", 10), session("a", "Alpha", 20)],
+        );
+        app.table.select(Some(1));
+        assert_eq!(titles(&app), ["Bravo", "Alpha"]);
+
+        app.merge(Changes {
+            updated: vec![session("a", "Alpha renamed", 0)],
+            removed: Vec::new(),
+        });
+        assert_eq!(titles(&app), ["Alpha renamed", "Bravo"]);
+        assert_eq!(
+            app.table.selected(),
+            Some(0),
+            "selection follows the session"
+        );
+
+        app.merge(Changes {
+            updated: vec![session("c", "Charlie", 5)],
+            removed: Vec::new(),
+        });
+        assert_eq!(titles(&app), ["Alpha renamed", "Charlie", "Bravo"]);
+        assert_eq!(app.table.selected(), Some(0));
+
+        app.filter = "charlie".into();
+        app.rebuild_view();
+        assert_eq!(titles(&app), ["Charlie"], "new sessions are searchable");
     }
 }
