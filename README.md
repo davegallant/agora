@@ -51,8 +51,14 @@ Other terminals don't have these yet.
 | `tab` | cycle agent: all, claude, codex, pi |
 | `l` | live sessions only |
 | `j` `k` `↑` `↓` `g` `G` | move |
+| `T` | choose a theme: `j`/`k` try one, `enter` keeps it, `esc` cancels |
 | `r` | reload every session from disk |
+| `?` | show every key |
 | `q` | quit |
+
+Themes: `terminal` (your terminal's own colors), `tokyo-night`, `monokai`,
+`catppuccin-mocha`, `dracula`, `gruvbox-dark` and `nord`. The choice is saved in
+`~/.config/agora/theme`.
 
 `agora --list` prints live sessions and recent history as tab-separated text, and
 `agora --search <words>` prints sessions whose conversation text matches.

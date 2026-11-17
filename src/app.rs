@@ -4,6 +4,7 @@ use crate::live::{self, Live, Snapshot, State};
 use crate::preview::{self, Rendered};
 use crate::search::{self, Files, Searcher};
 use crate::sessions::{self, Agent, Changes, Msg, Session};
+use crate::theme::{self, Theme, THEMES};
 use anyhow::Result;
 use ratatui::crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
@@ -38,8 +39,8 @@ pub enum Follow {
 }
 
 pub struct PreviewPane {
-    /// (session, width, filter, current match, full transcript) of `r`.
-    key: Option<(usize, usize, String, Option<usize>, bool)>,
+    /// (session, width, filter, current match, full transcript, theme) of `r`.
+    key: Option<(usize, usize, String, Option<usize>, bool, usize)>,
     pub r: Rendered,
     session: Option<usize>,
     filter: String,
@@ -87,6 +88,12 @@ pub struct App {
     pub search_progress: Option<(usize, usize)>,
     /// Drives the search spinner's animation.
     started: Instant,
+    /// Index into `THEMES`.
+    pub theme: usize,
+    /// While choosing a theme: the one to go back to on esc.
+    pub picking_theme: Option<usize>,
+    /// The `?` overlay is up; the next key closes it.
+    pub showing_keys: bool,
 }
 
 /// Text search starts after this pause in typing, and only for longer queries.
@@ -118,6 +125,7 @@ fn haystack(s: &Session, channel: &str) -> String {
 impl App {
     pub fn new(home: PathBuf, sessions: Vec<Session>) -> Self {
         let channels = Channels::load(&home);
+        let theme = theme::load(&home);
         let files = files_of(&sessions);
         let watch = sessions::spawn_watcher(home.clone(), Duration::from_secs(2));
         let mut app = App {
@@ -161,6 +169,9 @@ impl App {
             text_hits: HashMap::new(),
             search_progress: None,
             started: Instant::now(),
+            theme,
+            picking_theme: None,
+            showing_keys: false,
         };
         app.index_sessions();
         app.rebuild_view();
@@ -341,21 +352,22 @@ impl App {
             self.pane.follow = Follow::Bottom;
         }
         let full = self.text_hits.contains_key(&i);
-        let key = (i, width, self.filter.clone(), self.pane.current, full);
+        let t = self.theme;
+        let key = (i, width, self.filter.clone(), self.pane.current, full, t);
         if self.pane.key.as_ref() != Some(&key) {
             let terms = search::terms(&self.filter);
             let msgs = self.previews.entry((i, full)).or_insert_with(|| {
                 sessions::preview(&self.sessions[i], if full { usize::MAX } else { 200 }, full)
             });
-            let mut r = preview::render(msgs, &terms, width, self.pane.current);
+            let mut r = preview::render(&THEMES[t], msgs, &terms, width, self.pane.current);
             // First sight of matches: start on the most recent one.
             if self.pane.current.is_none() && !r.matches.is_empty() {
                 let last = r.matches.len() - 1;
-                r = preview::render(msgs, &terms, width, Some(last));
+                r = preview::render(&THEMES[t], msgs, &terms, width, Some(last));
                 self.pane.current = Some(last);
                 self.pane.follow = Follow::Match;
             }
-            self.pane.key = Some((i, width, self.filter.clone(), self.pane.current, full));
+            self.pane.key = Some((i, width, self.filter.clone(), self.pane.current, full, t));
             self.pane.r = r;
         }
         &mut self.pane
@@ -386,6 +398,31 @@ impl App {
     pub fn spinner(&self) -> &'static str {
         const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
         FRAMES[(self.started.elapsed().as_millis() / 80) as usize % FRAMES.len()]
+    }
+
+    pub fn theme(&self) -> &'static Theme {
+        &THEMES[self.theme]
+    }
+
+    /// Keys while the theme picker is open: moving previews, enter keeps.
+    fn on_theme_key(&mut self, k: KeyEvent, was: usize) {
+        let n = THEMES.len() as isize;
+        let step = |d: isize| (self.theme as isize + d).rem_euclid(n) as usize;
+        match k.code {
+            KeyCode::Char('j') | KeyCode::Down | KeyCode::Tab => self.theme = step(1),
+            KeyCode::Char('k') | KeyCode::Up | KeyCode::BackTab => self.theme = step(-1),
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('T') => {
+                self.theme = was;
+                self.picking_theme = None;
+            }
+            KeyCode::Enter => {
+                self.picking_theme = None;
+                if let Err(e) = theme::save(&self.home, self.theme) {
+                    self.status = Some(format!("could not save the theme: {e}"));
+                }
+            }
+            _ => {}
+        }
     }
 
     pub fn live_count(&self) -> usize {
@@ -450,6 +487,14 @@ impl App {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         if ctrl && k.code == KeyCode::Char('c') {
             return Some(Exit::Quit);
+        }
+        if let Some(was) = self.picking_theme {
+            self.on_theme_key(k, was);
+            return None;
+        }
+        if self.showing_keys {
+            self.showing_keys = false;
+            return None;
         }
         match k.code {
             KeyCode::Down => return self.nav(1),
@@ -519,6 +564,8 @@ impl App {
             KeyCode::Char('N') => self.jump_match(-1),
             KeyCode::Enter => return self.open(),
             KeyCode::Char('t') => self.open_in_new_tab(),
+            KeyCode::Char('T') => self.picking_theme = Some(self.theme),
+            KeyCode::Char('?') => self.showing_keys = true,
             _ => {}
         }
         None
@@ -1308,5 +1355,52 @@ mod tests {
         let f = a.spinner();
         assert_eq!(f.chars().count(), 1);
         assert!(('⠀'..='⣿').contains(&f.chars().next().unwrap()));
+    }
+
+    #[test]
+    fn t_picks_a_theme_live_and_saves_it_on_enter() {
+        let home = tmpdir("theme");
+        let mut a = App::new(home.clone(), vec![session("a", "Alpha", 0)]);
+        assert_eq!(a.theme().name, "terminal");
+
+        press(&mut a, KeyCode::Char('T'));
+        assert!(a.picking_theme.is_some());
+        press(&mut a, KeyCode::Char('j'));
+        assert_eq!(a.theme().name, "tokyo-night", "moving previews the theme");
+        assert_eq!(a.selected(), Some(0), "the list doesn't move underneath");
+        press(&mut a, KeyCode::Esc);
+        assert_eq!(a.theme().name, "terminal", "esc goes back");
+        assert!(a.picking_theme.is_none());
+        assert!(!home.join(".config/agora/theme").exists());
+
+        press(&mut a, KeyCode::Char('T'));
+        press(&mut a, KeyCode::Down);
+        press(&mut a, KeyCode::Down);
+        press(&mut a, KeyCode::Enter);
+        assert_eq!(a.theme().name, "monokai");
+        assert!(a.picking_theme.is_none());
+        let saved = App::new(home.clone(), Vec::new());
+        assert_eq!(saved.theme().name, "monokai", "kept across runs");
+
+        // Up from the first wraps to the last.
+        press(&mut a, KeyCode::Char('T'));
+        for _ in 0..3 {
+            press(&mut a, KeyCode::Up);
+        }
+        assert_eq!(a.theme().name, THEMES[THEMES.len() - 1].name);
+        fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn question_mark_shows_the_keys_and_any_key_closes_them() {
+        let mut a = five();
+        press(&mut a, KeyCode::Char('?'));
+        assert!(a.showing_keys);
+        assert!(
+            press(&mut a, KeyCode::Char('q')).is_none(),
+            "q only closes it"
+        );
+        assert!(!a.showing_keys);
+        assert_eq!(a.selected(), Some(0));
     }
 }

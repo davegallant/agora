@@ -133,7 +133,12 @@ fn help() {
     let h = home("help");
     for flag in ["-h", "--help"] {
         let out = stdout(&agora(&h, &[flag]));
-        for want in ["usage: agora", "--list", "--search <words>", "q    quit"] {
+        for want in [
+            "usage: agora",
+            "--list",
+            "--search <words>",
+            "  ?        show these keys",
+        ] {
             assert!(out.contains(want), "missing {want:?} in:\n{out}");
         }
     }

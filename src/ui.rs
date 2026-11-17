@@ -2,21 +2,42 @@ use crate::app::{App, Follow};
 use crate::live::{Live, State};
 use crate::search;
 use crate::sessions::Agent;
+use crate::theme::{Theme, THEMES};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{
-    Block, Borders, Cell, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table,
-    Wrap,
+    Block, Borders, Cell, Clear, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState,
+    Table, Wrap,
 };
 use ratatui::Frame;
 use std::time::SystemTime;
 
-fn agent_color(a: Agent) -> Color {
+/// Every key, for the `?` overlay and `--help`.
+pub const KEYS: &[(&str, &str)] = &[
+    ("enter", "jump to the session's tab, or resume it here"),
+    ("t", "resume or attach in a new Ghostty tab"),
+    ("/", "search titles and conversation text; esc clears"),
+    ("n N", "next / previous match in the preview"),
+    ("J K", "scroll the preview (ctrl-f / ctrl-b by page)"),
+    (
+        "j k ↑ ↓",
+        "move (g / G first / last, ctrl-d / ctrl-u by page)",
+    ),
+    ("c C", "next / previous channel"),
+    ("tab", "cycle agent: all, claude, codex, pi"),
+    ("l", "live sessions only"),
+    ("T", "choose a theme"),
+    ("r", "reload every session from disk"),
+    ("?", "show these keys"),
+    ("q", "quit"),
+];
+
+fn agent_color(t: &Theme, a: Agent) -> Color {
     match a {
-        Agent::Claude => Color::LightRed,
-        Agent::Codex => Color::LightBlue,
-        Agent::Pi => Color::LightMagenta,
+        Agent::Claude => t.claude,
+        Agent::Codex => t.codex,
+        Agent::Pi => t.pi,
     }
 }
 
@@ -38,22 +59,32 @@ fn running_in_background(live: Option<&Live>) -> bool {
     live.is_some_and(|l| l.state == State::Open && l.shells > 0)
 }
 
-fn badge(live: Option<&Live>) -> Span<'static> {
+fn badge(t: &Theme, live: Option<&Live>) -> Span<'static> {
     if running_in_background(live) {
-        return Span::styled(" ◐ ", Style::new().fg(Color::Cyan));
+        return Span::styled(" ◐ ", Style::new().fg(t.open));
     }
     match live.map(|l| l.state) {
-        Some(State::NeedsYou) => Span::styled(
-            " ! ",
-            Style::new().fg(Color::Black).bg(Color::Yellow).bold(),
-        ),
-        Some(State::Busy) => Span::styled(" ● ", Style::new().fg(Color::Green)),
-        Some(State::Open) => Span::styled(" ○ ", Style::new().fg(Color::Cyan)),
+        Some(State::NeedsYou) => {
+            Span::styled(" ! ", Style::new().fg(t.on_accent).bg(t.accent).bold())
+        }
+        Some(State::Busy) => Span::styled(" ● ", Style::new().fg(t.busy)),
+        Some(State::Open) => Span::styled(" ○ ", Style::new().fg(t.open)),
         None => Span::raw("   "),
     }
 }
 
 pub fn draw(f: &mut Frame, app: &mut App) {
+    let t = app.theme();
+    if t.bg.is_some() || t.fg.is_some() {
+        let mut base = Style::new();
+        if let Some(bg) = t.bg {
+            base = base.bg(bg);
+        }
+        if let Some(fg) = t.fg {
+            base = base.fg(fg);
+        }
+        f.render_widget(Block::new().style(base), f.area());
+    }
     let [main, footer] =
         Layout::vertical([Constraint::Min(3), Constraint::Length(1)]).areas(f.area());
     let [list, preview] =
@@ -63,9 +94,87 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     draw_list(f, app, list);
     draw_preview(f, app, preview);
     draw_footer(f, app, footer);
+    if app.picking_theme.is_some() {
+        draw_theme_picker(f, app);
+    } else if app.showing_keys {
+        draw_keys(f, app);
+    }
+}
+
+/// A box over the middle of the screen, cleared and filled with the theme.
+fn popup(f: &mut Frame, app: &App, title: &str, lines: Vec<Line>, width: u16) {
+    let t = app.theme();
+    let height = lines.len() as u16 + 2;
+    let area = f.area().clamp(Rect::new(
+        f.area().width.saturating_sub(width) / 2,
+        f.area().height.saturating_sub(height) / 2,
+        width,
+        height,
+    ));
+    let mut style = Style::new();
+    if let Some(bg) = t.bg {
+        style = style.bg(bg);
+    }
+    if let Some(fg) = t.fg {
+        style = style.fg(fg);
+    }
+    f.render_widget(Clear, area);
+    f.render_widget(
+        Paragraph::new(lines).style(style).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::new().fg(t.accent))
+                .title(format!(" {title} ").bold()),
+        ),
+        area,
+    );
+}
+
+fn draw_keys(f: &mut Frame, app: &App) {
+    let t = app.theme();
+    let col = KEYS
+        .iter()
+        .map(|(k, _)| k.chars().count())
+        .max()
+        .unwrap_or(0);
+    let lines: Vec<Line> = KEYS
+        .iter()
+        .map(|(k, what)| {
+            Line::from(vec![
+                Span::styled(format!(" {k:<col$}  "), Style::new().fg(t.accent).bold()),
+                Span::raw(format!("{what} ")),
+            ])
+        })
+        .collect();
+    let width = lines.iter().map(|l| l.width()).max().unwrap_or(0) as u16 + 2;
+    popup(f, app, "keys", lines, width);
+}
+
+/// A list of themes over the middle of the screen; the current one is applied.
+fn draw_theme_picker(f: &mut Frame, app: &App) {
+    let t = app.theme();
+    let width = THEMES.iter().map(|t| t.name.len()).max().unwrap_or(0) as u16 + 8;
+    let lines: Vec<Line> = THEMES
+        .iter()
+        .enumerate()
+        .map(|(i, th)| {
+            if i == app.theme {
+                Line::from(format!(" ▶ {} ", th.name)).style(
+                    Style::new()
+                        .fg(t.on_accent)
+                        .bg(t.accent)
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else {
+                Line::from(format!("   {} ", th.name))
+            }
+        })
+        .collect();
+    popup(f, app, "theme", lines, width);
 }
 
 fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
+    let t = app.theme();
     let mut parts: Vec<String> = Vec::new();
     if let Some(c) = &app.channel_filter {
         parts.push(format!("#{c}"));
@@ -97,16 +206,16 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
     let [search, table_area] =
         Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(inner);
     let search_line = if app.filtering || !app.filter.is_empty() {
-        let dim = Style::new().fg(Color::DarkGray);
+        let dim = Style::new().fg(t.muted);
         let mut spans = vec![
-            Span::styled(" / ", Style::new().fg(Color::Yellow)),
+            Span::styled(" / ", Style::new().fg(t.accent)),
             Span::raw(app.filter.clone()),
             Span::raw(if app.filtering { "█" } else { "" }),
         ];
         if app.searching() {
             spans.push(Span::styled(
                 format!("   {} ", app.spinner()),
-                Style::new().fg(Color::Yellow),
+                Style::new().fg(t.accent),
             ));
             spans.push(Span::styled(
                 match app.search_progress {
@@ -123,10 +232,7 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
         }
         Line::from(spans)
     } else {
-        Line::from(Span::styled(
-            " / to search",
-            Style::new().fg(Color::DarkGray),
-        ))
+        Line::from(Span::styled(" / to search", Style::new().fg(t.muted)))
     };
     f.render_widget(Paragraph::new(search_line), search);
 
@@ -142,17 +248,17 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
                 Style::new()
             };
             Row::new(vec![
-                Cell::from(badge(live)),
+                Cell::from(badge(t, live)),
                 Cell::from(Span::styled(
                     s.agent.name(),
-                    Style::new().fg(agent_color(s.agent)),
+                    Style::new().fg(agent_color(t, s.agent)),
                 )),
                 Cell::from(Span::styled(
                     s.project().to_string(),
-                    Style::new().fg(Color::Gray),
+                    Style::new().fg(t.subtle),
                 )),
                 Cell::from(Span::styled(s.title.clone(), title_style)),
-                Cell::from(Line::from(age(s.mtime)).right_aligned().fg(Color::DarkGray)),
+                Cell::from(Line::from(age(s.mtime)).right_aligned().fg(t.muted)),
             ])
         })
         .collect();
@@ -167,23 +273,17 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
         ],
     )
     .column_spacing(1)
-    .row_highlight_style(
-        Style::new()
-            .bg(Color::DarkGray)
-            .add_modifier(Modifier::BOLD),
-    );
+    .row_highlight_style(Style::new().bg(t.selection).add_modifier(Modifier::BOLD));
     f.render_stateful_widget(table, table_area, &mut app.table);
 }
 
 fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
+    let t = app.theme();
     let Some(i) = app.selected() else {
         let block = Block::default().borders(Borders::ALL).title(" preview ");
         let inner = block.inner(area);
         f.render_widget(block, area);
-        f.render_widget(
-            Paragraph::new("no sessions match").fg(Color::DarkGray),
-            inner,
-        );
+        f.render_widget(Paragraph::new("no sessions match").fg(t.muted), inner);
         return;
     };
 
@@ -194,8 +294,8 @@ fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
     let mut header = vec![
         Line::from(s.title.clone()).bold(),
         Line::from(vec![
-            Span::styled(s.agent.name(), Style::new().fg(agent_color(s.agent))),
-            Span::raw(format!(" · {} ago · {}", age(s.mtime), s.cwd)).fg(Color::Gray),
+            Span::styled(s.agent.name(), Style::new().fg(agent_color(t, s.agent))),
+            Span::raw(format!(" · {} ago · {}", age(s.mtime), s.cwd)).fg(t.subtle),
         ]),
     ];
     let action = match &live {
@@ -204,23 +304,20 @@ fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
         _ => "enter: resume here · t: resume in new tab",
     };
     let state = match live.as_ref().map(|l| l.state) {
-        Some(State::NeedsYou) => Span::styled("needs you  ", Style::new().fg(Color::Yellow).bold()),
-        Some(State::Busy) => Span::styled("working  ", Style::new().fg(Color::Green)),
+        Some(State::NeedsYou) => Span::styled("needs you  ", Style::new().fg(t.accent).bold()),
+        Some(State::Busy) => Span::styled("working  ", Style::new().fg(t.busy)),
         Some(State::Open) if running_in_background(live.as_ref()) => {
             let n = live.as_ref().map_or(0, |l| l.shells);
             let plural = if n == 1 { "" } else { "s" };
             Span::styled(
                 format!("open · {n} shell{plural} running  "),
-                Style::new().fg(Color::Cyan),
+                Style::new().fg(t.open),
             )
         }
-        Some(State::Open) => Span::styled("open  ", Style::new().fg(Color::Cyan)),
+        Some(State::Open) => Span::styled("open  ", Style::new().fg(t.open)),
         None => Span::raw(""),
     };
-    header.push(Line::from(vec![
-        state,
-        Span::raw(action).fg(Color::DarkGray),
-    ]));
+    header.push(Line::from(vec![state, Span::raw(action).fg(t.muted)]));
 
     // The body is laid out first: the block title reports its matches.
     let outer = Block::default().borders(Borders::ALL).inner(area);
@@ -260,21 +357,15 @@ fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
         let cur = pane.current.map_or(0, |c| c + 1);
         title.push(Span::styled(
             format!(" {cur}/{} ", pane.r.matches.len()),
-            Style::new().fg(Color::Black).bg(Color::Yellow).bold(),
+            Style::new().fg(t.on_accent).bg(t.accent).bold(),
         ));
-        title.push(Span::styled(" n/N ", Style::new().fg(Color::DarkGray)));
+        title.push(Span::styled(" n/N ", Style::new().fg(t.muted)));
     } else if !terms.is_empty() && text_hit {
-        title.push(Span::styled(
-            " no match shown ",
-            Style::new().fg(Color::DarkGray),
-        ));
+        title.push(Span::styled(" no match shown ", Style::new().fg(t.muted)));
     }
     if total > height {
         let pct = (top * 100).checked_div(max_top).unwrap_or(100);
-        title.push(Span::styled(
-            format!(" {pct}% "),
-            Style::new().fg(Color::DarkGray),
-        ));
+        title.push(Span::styled(format!(" {pct}% "), Style::new().fg(t.muted)));
     }
     let block = Block::default()
         .borders(Borders::ALL)
@@ -282,7 +373,7 @@ fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(block, area);
     f.render_widget(Paragraph::new(header).wrap(Wrap { trim: true }), head_area);
     f.render_widget(
-        Paragraph::new("─".repeat(rule_area.width as usize)).fg(Color::DarkGray),
+        Paragraph::new("─".repeat(rule_area.width as usize)).fg(t.muted),
         rule_area,
     );
 
@@ -294,8 +385,8 @@ fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
             Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .begin_symbol(None)
                 .end_symbol(None)
-                .thumb_style(Style::new().fg(Color::Gray))
-                .track_style(Style::new().fg(Color::DarkGray)),
+                .thumb_style(Style::new().fg(t.subtle))
+                .track_style(Style::new().fg(t.muted)),
             body_area,
             &mut sb,
         );
@@ -305,27 +396,29 @@ fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
         let buf = f.buffer_mut();
         for &row in &pane.r.matches {
             if let Some(c) = buf.cell_mut((x, at(row))) {
-                c.set_symbol("━").set_fg(Color::Yellow);
+                c.set_symbol("━").set_fg(t.accent);
             }
         }
         if let Some(&row) = pane.current.and_then(|c| pane.r.matches.get(c)) {
             if let Some(c) = buf.cell_mut((x, at(row))) {
-                c.set_symbol("◆").set_fg(Color::LightRed);
+                c.set_symbol("◆").set_fg(t.marker);
             }
         }
     }
 }
 
 fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme();
     let text = if let Some(s) = &app.status {
-        Line::from(s.clone()).fg(Color::Yellow)
+        Line::from(s.clone()).fg(t.accent)
+    } else if app.picking_theme.is_some() {
+        Line::from(" j/k try a theme · enter keep · esc cancel").fg(t.muted)
+    } else if app.showing_keys {
+        Line::from(" any key closes").fg(t.muted)
     } else if app.filtering {
-        Line::from(" type to filter · enter done · esc clear").fg(Color::DarkGray)
+        Line::from(" type to filter · enter done · esc clear").fg(t.muted)
     } else {
-        Line::from(
-            " enter open · t new tab · / search · n/N match · J/K scroll · c channel · tab agent · l live · r reload · q quit",
-        )
-        .fg(Color::DarkGray)
+        Line::from(" enter open · / search · ? keys · q quit").fg(t.muted)
     };
     f.render_widget(Paragraph::new(text), area);
 }
@@ -381,6 +474,7 @@ mod tests {
     }
 
     use super::{age, badge};
+    const T: &crate::theme::Theme = &crate::theme::THEMES[0];
     use crate::app::Follow;
     use crate::live::{Live, State};
     use std::time::Duration;
@@ -460,14 +554,14 @@ mod tests {
             background: None,
             shells,
         };
-        assert_eq!(badge(Some(&l(State::NeedsYou, 0))).content, " ! ");
-        assert_eq!(badge(Some(&l(State::Busy, 0))).content, " ● ");
-        assert_eq!(badge(Some(&l(State::Open, 0))).content, " ○ ");
-        assert_eq!(badge(Some(&l(State::Open, 1))).content, " ◐ ");
+        assert_eq!(badge(T, Some(&l(State::NeedsYou, 0))).content, " ! ");
+        assert_eq!(badge(T, Some(&l(State::Busy, 0))).content, " ● ");
+        assert_eq!(badge(T, Some(&l(State::Open, 0))).content, " ○ ");
+        assert_eq!(badge(T, Some(&l(State::Open, 1))).content, " ◐ ");
         // Busy and waiting sessions already show they aren't idle.
-        assert_eq!(badge(Some(&l(State::Busy, 1))).content, " ● ");
-        assert_eq!(badge(Some(&l(State::NeedsYou, 1))).content, " ! ");
-        assert_eq!(badge(None).content, "   ");
+        assert_eq!(badge(T, Some(&l(State::Busy, 1))).content, " ● ");
+        assert_eq!(badge(T, Some(&l(State::NeedsYou, 1))).content, " ! ");
+        assert_eq!(badge(T, None).content, "   ");
     }
 
     #[test]
@@ -662,6 +756,34 @@ mod tests {
         app.filter = "question".into();
         for (w, h) in [(1, 1), (5, 3), (10, 5), (20, 8), (3, 40)] {
             screen(&mut app, w, h);
+        }
+    }
+
+    #[test]
+    fn theme_picker_lists_themes_and_paints_the_background() {
+        let mut app = App::new(
+            PathBuf::from("/nonexistent"),
+            vec![session("a", "Alpha", PathBuf::from("/nonexistent/a"))],
+        );
+        app.picking_theme = Some(0);
+        app.theme = crate::theme::find("tokyo-night").unwrap();
+        let mut term = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        term.draw(|f| super::draw(f, &mut app)).unwrap();
+        let buf = term.backend().buffer();
+        let s: String = buf.content().iter().map(|c| c.symbol()).collect();
+        assert_has(&s, &[" theme ", "▶ tokyo-night", "monokai", "esc cancel"]);
+        assert_eq!(buf[(0, 0)].bg, app.theme().bg.unwrap());
+    }
+
+    #[test]
+    fn keys_overlay_lists_every_key() {
+        let mut app = App::new(PathBuf::from("/nonexistent"), Vec::new());
+        assert_has(&screen(&mut app, 100, 24), &["? keys"]);
+        app.showing_keys = true;
+        let s = screen(&mut app, 100, 24);
+        assert_has(&s, &[" keys ", "any key closes"]);
+        for (k, what) in super::KEYS {
+            assert_has(&s, &[k, what]);
         }
     }
 }

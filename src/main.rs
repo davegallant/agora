@@ -7,6 +7,7 @@ mod live;
 mod preview;
 mod search;
 mod sessions;
+mod theme;
 mod ui;
 
 use anyhow::{anyhow, Context, Result};
@@ -23,20 +24,21 @@ fn main() -> Result<()> {
             return Ok(());
         }
         if arg == "-h" || arg == "--help" {
-            println!(
+            print!(
                 "agora: browse live and past Claude Code, Codex and pi sessions.\n\n\
                  usage: agora                  open the browser\n\
                  \x20      agora --list           live and recent sessions, tab-separated\n\
                  \x20      agora --search <words> sessions whose conversation text matches\n\
                  \x20      agora --channels       channels and their session counts\n\
                  \x20      agora --version        print the version\n\n\
-                 enter  jump to the session's Ghostty tab, or resume it here\n\
-                 t      resume in a new Ghostty tab\n\
-                 /      search    tab  cycle agent    l  live only\n\
-                 c/C    next/previous channel (rules in ~/.config/agora/channels)\n\
-                 J/K    scroll preview (ctrl-f/ctrl-b by page)\n\
-                 n/N    next/previous match in the preview\n\
-                 r      reload    q    quit"
+                 keys:\n"
+            );
+            for (key, what) in ui::KEYS {
+                println!("  {key:<8} {what}");
+            }
+            println!(
+                "\nchannels are set in ~/.config/agora/channels; the theme is kept in\n\
+                 ~/.config/agora/theme."
             );
             return Ok(());
         }

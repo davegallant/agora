@@ -6,7 +6,8 @@
 //! row each match lands on, are exact; scrolling to a match depends on it.
 
 use crate::sessions::Msg;
-use ratatui::style::{Color, Modifier, Style};
+use crate::theme::Theme;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthChar;
 
@@ -21,10 +22,10 @@ pub const MARKER: &str = "▶ ";
 
 const GUTTER: usize = 2;
 
-pub fn current_style() -> Style {
+pub fn current_style(theme: &Theme) -> Style {
     Style::new()
-        .fg(Color::Black)
-        .bg(Color::Yellow)
+        .fg(theme.on_accent)
+        .bg(theme.accent)
         .add_modifier(Modifier::BOLD)
 }
 
@@ -77,7 +78,13 @@ fn row(gutter: &Span<'static>, chars: &[(char, Style)]) -> Line<'static> {
 
 /// Lay out `msgs` in `width` columns. `current` is the index of the one match
 /// to highlight; the others are found but drawn as plain text.
-pub fn render(msgs: &[Msg], terms: &[String], width: usize, current: Option<usize>) -> Rendered {
+pub fn render(
+    theme: &Theme,
+    msgs: &[Msg],
+    terms: &[String],
+    width: usize,
+    current: Option<usize>,
+) -> Rendered {
     let avail = width.saturating_sub(GUTTER).max(1);
     let mut rows = Vec::new();
     let mut matches = Vec::new();
@@ -85,12 +92,12 @@ pub fn render(msgs: &[Msg], terms: &[String], width: usize, current: Option<usiz
     for m in msgs {
         let (gutter, base) = if m.user {
             (
-                Span::styled("▌ ", Style::new().fg(Color::Yellow)),
-                Style::new().fg(Color::Yellow),
+                Span::styled("▌ ", Style::new().fg(theme.accent)),
+                Style::new().fg(theme.accent),
             )
         } else {
             (
-                Span::styled("│ ", Style::new().fg(Color::DarkGray)),
+                Span::styled("│ ", Style::new().fg(theme.muted)),
                 Style::new(),
             )
         };
@@ -115,7 +122,7 @@ pub fn render(msgs: &[Msg], terms: &[String], width: usize, current: Option<usiz
                             starts.push(chars.len());
                         }
                         if Some(idx) == current {
-                            current_style()
+                            current_style(theme)
                         } else {
                             base
                         }
@@ -177,7 +184,7 @@ pub fn render(msgs: &[Msg], terms: &[String], width: usize, current: Option<usiz
     {
         row.spans[0] = Span::styled(
             MARKER,
-            Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
         );
     }
     Rendered { rows, matches }
@@ -186,6 +193,9 @@ pub fn render(msgs: &[Msg], terms: &[String], width: usize, current: Option<usiz
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::style::Color;
+
+    const T: &Theme = &crate::theme::THEMES[0];
 
     fn msg(user: bool, text: &str) -> Msg {
         Msg {
@@ -200,7 +210,7 @@ mod tests {
 
     #[test]
     fn wraps_on_words_and_keeps_gutter() {
-        let r = render(&[msg(true, "alpha beta gamma")], &[], 12, None);
+        let r = render(T, &[msg(true, "alpha beta gamma")], &[], 12, None);
         let rows: Vec<String> = r.rows.iter().map(text).collect();
         assert_eq!(rows, ["▌ alpha beta", "▌ gamma"]);
     }
@@ -212,7 +222,7 @@ mod tests {
             msg(false, "one\nNEEDLE two needle"),
         ];
         let terms = vec!["needle".to_string()];
-        let r = render(&msgs, &terms, 80, Some(1));
+        let r = render(T, &msgs, &terms, 80, Some(1));
         // row 0: user msg, row 1: blank, row 2: "one", row 3: two matches.
         assert_eq!(r.matches, [0, 3, 3]);
         let hit = r.rows[3]
@@ -220,7 +230,7 @@ mod tests {
             .iter()
             .find(|s| s.content == "NEEDLE")
             .unwrap();
-        assert_eq!(hit.style, current_style());
+        assert_eq!(hit.style, current_style(T));
     }
 
     #[test]
@@ -255,51 +265,51 @@ mod tests {
 
     #[test]
     fn nothing_to_render() {
-        let r = render(&[], &terms(&["x"]), 40, None);
+        let r = render(T, &[], &terms(&["x"]), 40, None);
         assert!(r.rows.is_empty() && r.matches.is_empty());
     }
 
     #[test]
     fn messages_are_separated_by_one_blank_row() {
-        let r = render(&[msg(true, "q"), msg(false, "a")], &[], 20, None);
+        let r = render(T, &[msg(true, "q"), msg(false, "a")], &[], 20, None);
         assert_eq!(rows(&r), ["▌ q", "", "│ a"]);
     }
 
     #[test]
     fn blank_lines_keep_the_gutter() {
-        let r = render(&[msg(false, "a\n\nb")], &[], 20, None);
+        let r = render(T, &[msg(false, "a\n\nb")], &[], 20, None);
         assert_eq!(rows(&r), ["│ a", "│ ", "│ b"]);
     }
 
     #[test]
     fn breaks_at_a_space_that_does_not_fit() {
-        let r = render(&[msg(true, "aaaa bbbb")], &[], 6, None);
+        let r = render(T, &[msg(true, "aaaa bbbb")], &[], 6, None);
         assert_eq!(rows(&r), ["▌ aaaa", "▌ bbbb"]);
     }
 
     #[test]
     fn long_words_are_split() {
-        let r = render(&[msg(true, "abcdefgh")], &[], 5, None);
+        let r = render(T, &[msg(true, "abcdefgh")], &[], 5, None);
         assert_eq!(rows(&r), ["▌ abc", "▌ def", "▌ gh"]);
     }
 
     #[test]
     fn wide_chars_take_two_columns() {
-        let r = render(&[msg(true, "日本語")], &[], 6, None);
+        let r = render(T, &[msg(true, "日本語")], &[], 6, None);
         assert_eq!(rows(&r), ["▌ 日本", "▌ 語"]);
         // Narrower than one wide char: still one per row, never stuck.
-        let r = render(&[msg(true, "日本")], &[], 1, None);
+        let r = render(T, &[msg(true, "日本")], &[], 1, None);
         assert_eq!(rows(&r), ["▌ 日", "▌ 本"]);
     }
 
     #[test]
     fn tabs_expand_and_control_chars_drop() {
-        let r = render(&[msg(true, "a\tb\u{7}c")], &[], 40, None);
+        let r = render(T, &[msg(true, "a\tb\u{7}c")], &[], 40, None);
         assert_eq!(rows(&r), ["▌ a    bc"]);
-        let r = render(&[msg(true, "line\r\nnext")], &[], 40, None);
+        let r = render(T, &[msg(true, "line\r\nnext")], &[], 40, None);
         assert_eq!(rows(&r), ["▌ line", "▌ next"]);
         // A line of only control chars is a blank row.
-        let r = render(&[msg(true, "\u{1b}")], &[], 40, None);
+        let r = render(T, &[msg(true, "\u{1b}")], &[], 40, None);
         assert_eq!(rows(&r), ["▌ "]);
     }
 
@@ -308,7 +318,7 @@ mod tests {
         let text = "The quick brown fox jumps over the lazy dog. ".repeat(20)
             + "averyveryverylongwordthatmustbesplitacrossrows 日本語のテキスト";
         for width in [3, 7, 10, 23, 80] {
-            let r = render(&[msg(false, &text)], &[], width, None);
+            let r = render(T, &[msg(false, &text)], &[], width, None);
             for row in &r.rows {
                 assert!(row.width() <= width.max(GUTTER + 2), "{width}: {row:?}");
             }
@@ -318,7 +328,7 @@ mod tests {
     #[test]
     fn a_wrapped_match_is_on_the_row_it_starts() {
         let t = terms(&["needle"]);
-        let r = render(&[msg(true, "xx needle")], &t, 7, None);
+        let r = render(T, &[msg(true, "xx needle")], &t, 7, None);
         assert_eq!(rows(&r), ["▌ xx ", "▌ needl", "▌ e"]);
         assert_eq!(r.matches, [1]);
     }
@@ -326,7 +336,7 @@ mod tests {
     #[test]
     fn styles() {
         let t = terms(&["b"]);
-        let r = render(&[msg(true, "a b"), msg(false, "b c")], &t, 40, None);
+        let r = render(T, &[msg(true, "a b"), msg(false, "b c")], &t, 40, None);
         assert_eq!(r.matches, [0, 2]);
         let user = &r.rows[0].spans;
         assert_eq!(user[0].content, "▌ ");
@@ -340,9 +350,9 @@ mod tests {
         assert_eq!(asst[1].content, "b c");
         assert_eq!(asst[1].style, Style::new());
 
-        let r = render(&[msg(true, "a b"), msg(false, "b c")], &t, 40, Some(0));
+        let r = render(T, &[msg(true, "a b"), msg(false, "b c")], &t, 40, Some(0));
         assert_eq!(r.rows[0].spans[0].content, MARKER);
-        assert_eq!(r.rows[0].spans[2].style, current_style());
+        assert_eq!(r.rows[0].spans[2].style, current_style(T));
         assert_eq!(
             r.rows[2].spans[0].content, "│ ",
             "only the current row is marked"
@@ -354,7 +364,7 @@ mod tests {
     fn current_match_counts_across_lines_and_messages() {
         let t = terms(&["x"]);
         let msgs = [msg(true, "x x\nx"), msg(false, "x")];
-        let r = render(&msgs, &t, 40, Some(2));
+        let r = render(T, &msgs, &t, 40, Some(2));
         assert_eq!(r.matches, [0, 0, 1, 3]);
         let current: Vec<usize> = r
             .rows
@@ -363,7 +373,7 @@ mod tests {
             .flat_map(|(n, row)| {
                 row.spans
                     .iter()
-                    .filter(|s| s.style == current_style())
+                    .filter(|s| s.style == current_style(T))
                     .map(move |_| n)
             })
             .collect();
@@ -373,7 +383,7 @@ mod tests {
     #[test]
     fn a_multi_char_match_is_one_span() {
         let t = terms(&["needle"]);
-        let r = render(&[msg(false, "a NEEDLE b")], &t, 40, Some(0));
+        let r = render(T, &[msg(false, "a NEEDLE b")], &t, 40, Some(0));
         let spans: Vec<&str> = r.rows[0].spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(spans, [MARKER, "a ", "NEEDLE", " b"]);
     }

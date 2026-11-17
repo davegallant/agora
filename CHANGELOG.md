@@ -10,6 +10,16 @@ All notable changes to agora. The format follows
 
 - `◐` marks a Claude session that has finished its turn but still has shells
   running in the background, and the preview says how many.
+- Themes: `T` opens a picker that previews each theme as you move through it;
+  `enter` keeps one and `esc` goes back. Ships `terminal` (your terminal's own
+  colors, the default), `tokyo-night`, `monokai`, `catppuccin-mocha`,
+  `dracula`, `gruvbox-dark` and `nord`. The choice is saved in
+  `~/.config/agora/theme`.
+- `?` shows every key, and `agora --help` prints the same list.
+
+### Changed
+
+- The footer shows only the main keys; the rest are behind `?`.
 
 ### Fixed
 
