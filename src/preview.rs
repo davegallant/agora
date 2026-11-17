@@ -222,4 +222,148 @@ mod tests {
         let terms = vec!["foo".to_string(), "oob".to_string()];
         assert_eq!(find_ranges("xfoobar", &terms), [(1, 5)]);
     }
+
+    fn rows(r: &Rendered) -> Vec<String> {
+        r.rows.iter().map(text).collect()
+    }
+
+    fn terms(t: &[&str]) -> Vec<String> {
+        t.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn find_ranges_cases() {
+        assert!(find_ranges("anything", &[]).is_empty());
+        assert!(find_ranges("anything", &terms(&[""])).is_empty());
+        assert_eq!(find_ranges("FooBAR", &terms(&["bar"])), [(3, 6)]);
+        assert_eq!(find_ranges("x", &terms(&["", "x"])), [(0, 1)]);
+        // Touching ranges merge into one highlight.
+        assert_eq!(find_ranges("abcd", &terms(&["ab", "cd"])), [(0, 4)]);
+        assert_eq!(find_ranges("ab ab", &terms(&["ab"])), [(0, 2), (3, 5)]);
+        // Occurrences of one term don't overlap.
+        assert_eq!(find_ranges("aaa", &terms(&["aa"])), [(0, 2)]);
+        // Offsets are bytes, past multi-byte text.
+        assert_eq!(find_ranges("日本 needle", &terms(&["needle"])), [(7, 13)]);
+        assert!(find_ranges("short", &terms(&["longer than text"])).is_empty());
+    }
+
+    #[test]
+    fn nothing_to_render() {
+        let r = render(&[], &terms(&["x"]), 40, None);
+        assert!(r.rows.is_empty() && r.matches.is_empty());
+    }
+
+    #[test]
+    fn messages_are_separated_by_one_blank_row() {
+        let r = render(&[msg(true, "q"), msg(false, "a")], &[], 20, None);
+        assert_eq!(rows(&r), ["▌ q", "", "│ a"]);
+    }
+
+    #[test]
+    fn blank_lines_keep_the_gutter() {
+        let r = render(&[msg(false, "a\n\nb")], &[], 20, None);
+        assert_eq!(rows(&r), ["│ a", "│ ", "│ b"]);
+    }
+
+    #[test]
+    fn breaks_at_a_space_that_does_not_fit() {
+        let r = render(&[msg(true, "aaaa bbbb")], &[], 6, None);
+        assert_eq!(rows(&r), ["▌ aaaa", "▌ bbbb"]);
+    }
+
+    #[test]
+    fn long_words_are_split() {
+        let r = render(&[msg(true, "abcdefgh")], &[], 5, None);
+        assert_eq!(rows(&r), ["▌ abc", "▌ def", "▌ gh"]);
+    }
+
+    #[test]
+    fn wide_chars_take_two_columns() {
+        let r = render(&[msg(true, "日本語")], &[], 6, None);
+        assert_eq!(rows(&r), ["▌ 日本", "▌ 語"]);
+        // Narrower than one wide char: still one per row, never stuck.
+        let r = render(&[msg(true, "日本")], &[], 1, None);
+        assert_eq!(rows(&r), ["▌ 日", "▌ 本"]);
+    }
+
+    #[test]
+    fn tabs_expand_and_control_chars_drop() {
+        let r = render(&[msg(true, "a\tb\u{7}c")], &[], 40, None);
+        assert_eq!(rows(&r), ["▌ a    bc"]);
+        let r = render(&[msg(true, "line\r\nnext")], &[], 40, None);
+        assert_eq!(rows(&r), ["▌ line", "▌ next"]);
+        // A line of only control chars is a blank row.
+        let r = render(&[msg(true, "\u{1b}")], &[], 40, None);
+        assert_eq!(rows(&r), ["▌ "]);
+    }
+
+    #[test]
+    fn every_row_fits_the_width() {
+        let text = "The quick brown fox jumps over the lazy dog. ".repeat(20)
+            + "averyveryverylongwordthatmustbesplitacrossrows 日本語のテキスト";
+        for width in [3, 7, 10, 23, 80] {
+            let r = render(&[msg(false, &text)], &[], width, None);
+            for row in &r.rows {
+                assert!(row.width() <= width.max(GUTTER + 2), "{width}: {row:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_wrapped_match_is_on_the_row_it_starts() {
+        let t = terms(&["needle"]);
+        let r = render(&[msg(true, "xx needle")], &t, 7, None);
+        assert_eq!(rows(&r), ["▌ xx ", "▌ needl", "▌ e"]);
+        assert_eq!(r.matches, [1]);
+    }
+
+    #[test]
+    fn styles() {
+        let t = terms(&["b"]);
+        let r = render(&[msg(true, "a b"), msg(false, "b c")], &t, 40, None);
+        assert_eq!(r.matches, [0, 2]);
+        let user = &r.rows[0].spans;
+        assert_eq!(user[0].content, "▌ ");
+        assert_eq!(user[1].content, "a ");
+        assert_eq!(user[1].style, Style::new().fg(Color::Yellow));
+        assert_eq!(user[2].content, "b");
+        assert_eq!(user[2].style, match_style(), "no current match");
+        let asst = &r.rows[2].spans;
+        assert_eq!(asst[0].content, "│ ");
+        assert_eq!(asst[1].style, match_style());
+        assert_eq!(asst[2].content, " c");
+        assert_eq!(asst[2].style, Style::new());
+
+        let r = render(&[msg(true, "a b"), msg(false, "b c")], &t, 40, Some(0));
+        assert_eq!(r.rows[0].spans[2].style, current_style());
+        assert_eq!(r.rows[2].spans[1].style, match_style());
+    }
+
+    #[test]
+    fn current_match_counts_across_lines_and_messages() {
+        let t = terms(&["x"]);
+        let msgs = [msg(true, "x x\nx"), msg(false, "x")];
+        let r = render(&msgs, &t, 40, Some(2));
+        assert_eq!(r.matches, [0, 0, 1, 3]);
+        let current: Vec<usize> = r
+            .rows
+            .iter()
+            .enumerate()
+            .flat_map(|(n, row)| {
+                row.spans
+                    .iter()
+                    .filter(|s| s.style == current_style())
+                    .map(move |_| n)
+            })
+            .collect();
+        assert_eq!(current, [1], "only the third match is current");
+    }
+
+    #[test]
+    fn a_multi_char_match_is_one_span() {
+        let t = terms(&["needle"]);
+        let r = render(&[msg(false, "a NEEDLE b")], &t, 40, Some(0));
+        let spans: Vec<&str> = r.rows[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(spans, ["│ ", "a ", "NEEDLE", " b"]);
+    }
 }

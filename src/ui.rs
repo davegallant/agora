@@ -340,4 +340,254 @@ mod tests {
             assert!(screen.contains(want), "missing {want:?} in:\n{screen}");
         }
     }
+
+    use super::{age, badge};
+    use crate::app::Follow;
+    use crate::live::{Live, State};
+    use std::time::Duration;
+
+    fn session(id: &str, title: &str, path: PathBuf) -> Session {
+        Session {
+            agent: Agent::Claude,
+            id: id.into(),
+            path,
+            cwd: "/w/proj".into(),
+            title: title.into(),
+            mtime: SystemTime::now(),
+        }
+    }
+
+    fn screen(app: &mut App, w: u16, h: u16) -> String {
+        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+        term.draw(|f| super::draw(f, app)).unwrap();
+        let buf = term.backend().buffer();
+        (0..h)
+            .map(|y| {
+                (0..w)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn assert_has(screen: &str, wants: &[&str]) {
+        for want in wants {
+            assert!(screen.contains(want), "missing {want:?} in:\n{screen}");
+        }
+    }
+
+    /// A transcript of `n` short exchanges.
+    fn long_transcript(tag: &str, n: usize) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("agora-ui-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("long.jsonl");
+        let body: String = (0..n)
+            .map(|i| {
+                format!(
+                    "{}\n",
+                    serde_json::json!({"type":"user","cwd":"/w","message":{"content":format!("question {i}")}})
+                )
+            })
+            .collect();
+        std::fs::write(&path, body).unwrap();
+        path
+    }
+
+    #[test]
+    fn ages() {
+        let ago = |s: u64| age(SystemTime::now() - Duration::from_secs(s));
+        assert_eq!(ago(0), "now");
+        assert_eq!(ago(59), "now");
+        assert_eq!(ago(60), "1m");
+        assert_eq!(ago(3599), "59m");
+        assert_eq!(ago(3600), "1h");
+        assert_eq!(ago(86_399), "23h");
+        assert_eq!(ago(86_400), "1d");
+        assert_eq!(ago(86_400 * 13), "13d");
+        assert_eq!(ago(86_400 * 14), "2w");
+        assert_eq!(ago(86_400 * 70), "10w");
+        // A clock that moved backwards reads as now.
+        assert_eq!(age(SystemTime::now() + Duration::from_secs(600)), "now");
+    }
+
+    #[test]
+    fn badges() {
+        assert_eq!(badge(Some(State::NeedsYou)).content, " ! ");
+        assert_eq!(badge(Some(State::Busy)).content, " ● ");
+        assert_eq!(badge(Some(State::Open)).content, " ○ ");
+        assert_eq!(badge(None).content, "   ");
+    }
+
+    #[test]
+    fn no_sessions() {
+        let mut app = App::new(PathBuf::from("/nonexistent"), Vec::new());
+        let s = screen(&mut app, 80, 20);
+        assert_has(
+            &s,
+            &["0 live · 0/0 sessions", "/ to search", "no sessions match"],
+        );
+    }
+
+    #[test]
+    fn scope_filter_and_footer_states() {
+        let mut app = App::new(
+            PathBuf::from("/nonexistent"),
+            vec![session("a", "Alpha", PathBuf::from("/nonexistent/a"))],
+        );
+        app.agent_filter = Some(Agent::Codex);
+        app.live_only = true;
+        app.rebuild_view();
+        assert_has(
+            &screen(&mut app, 100, 20),
+            &["[codex, live]", "0/1 sessions"],
+        );
+        app.agent_filter = None;
+        app.rebuild_view();
+        assert_has(&screen(&mut app, 100, 20), &["[all, live]"]);
+
+        app.live_only = false;
+        app.filtering = true;
+        app.filter = "al".into();
+        let s = screen(&mut app, 100, 20);
+        assert_has(&s, &[" / al█", "type to filter"]);
+        assert!(!s.contains("["), "no scope shown:\n{s}");
+
+        app.status = Some("something happened".into());
+        assert_has(&screen(&mut app, 100, 20), &["something happened"]);
+    }
+
+    #[test]
+    fn search_progress_and_hit_count() {
+        let mut app = App::new(
+            PathBuf::from("/nonexistent"),
+            vec![session("a", "Alpha", PathBuf::from("/nonexistent/a"))],
+        );
+        app.filter = "zebra".into();
+        app.search_progress = Some((3, 10));
+        assert_has(
+            &screen(&mut app, 100, 20),
+            &["searching conversations 3/10"],
+        );
+        app.search_progress = None;
+        app.text_hits.insert(0, "…zebra…".into());
+        assert_has(
+            &screen(&mut app, 100, 20),
+            &["1 match in conversation text"],
+        );
+    }
+
+    #[test]
+    fn live_sessions_show_their_state_and_action() {
+        let mut app = App::new(
+            PathBuf::from("/nonexistent"),
+            vec![session("a", "Alpha", PathBuf::from("/nonexistent/a"))],
+        );
+        let cases = [
+            (
+                State::NeedsYou,
+                false,
+                " ! ",
+                "needs you",
+                "enter: jump to its tab",
+            ),
+            (
+                State::Busy,
+                true,
+                " ● ",
+                "working",
+                "enter: attach (background)",
+            ),
+            (State::Open, true, " ○ ", "open", "t: attach in new tab"),
+        ];
+        for (state, background, glyph, label, action) in cases {
+            app.live.insert(
+                0,
+                Live {
+                    state,
+                    term: (!background).then(|| crate::ghostty::Term {
+                        id: "T".into(),
+                        title: "Alpha".into(),
+                        cwd: "/w/proj".into(),
+                    }),
+                    background: background.then(|| "bg".into()),
+                },
+            );
+            let s = screen(&mut app, 120, 20);
+            assert_has(&s, &[glyph, label, action, "1 live"]);
+        }
+        app.live.clear();
+        assert_has(
+            &screen(&mut app, 120, 20),
+            &["enter: resume here · t: resume in new tab", "0 live"],
+        );
+    }
+
+    #[test]
+    fn long_previews_follow_the_bottom_and_show_a_percentage() {
+        let path = long_transcript("long", 40);
+        let mut app = App::new(
+            PathBuf::from("/nonexistent"),
+            vec![session("a", "Long", path)],
+        );
+        let s = screen(&mut app, 80, 24);
+        assert_has(&s, &["question 39", " 100% "]);
+        assert!(!s.contains("▌ question 0 "), "{s}");
+
+        app.pane.follow = Follow::Top(0);
+        let s = screen(&mut app, 80, 24);
+        assert_has(&s, &["▌ question 0", " 0% "]);
+        assert_eq!(app.pane.top, 0);
+
+        // Scrolling past the end stops at the last page.
+        app.pane.follow = Follow::Top(10_000);
+        screen(&mut app, 80, 24);
+        assert_eq!(app.pane.top, app.pane.r.rows.len() - app.pane.height);
+    }
+
+    #[test]
+    fn preview_title_counts_matches_and_scrolls_to_the_current_one() {
+        let path = long_transcript("matches", 40);
+        let mut app = App::new(
+            PathBuf::from("/nonexistent"),
+            vec![session("a", "Long", path)],
+        );
+        app.filter = "question".into();
+        let s = screen(&mut app, 80, 24);
+        assert_has(&s, &[" 40/40 ", " n/N ", "question 39"]);
+        app.pane.current = Some(0);
+        app.pane.follow = Follow::Match;
+        let s = screen(&mut app, 80, 24);
+        assert_has(&s, &[" 1/40 ", "▌ question 0 "]);
+        // Every word of the filter is highlighted on its own.
+        app.filter = "question 1".into();
+        assert_has(&screen(&mut app, 80, 24), &[" 53/53 "]);
+    }
+
+    #[test]
+    fn a_text_hit_without_a_visible_match_says_so() {
+        let path = long_transcript("nomatch", 2);
+        let mut app = App::new(
+            PathBuf::from("/nonexistent"),
+            vec![session("a", "Short", path)],
+        );
+        app.filter = "elsewhere".into();
+        app.text_hits.insert(0, "…elsewhere…".into());
+        assert_has(&screen(&mut app, 80, 20), &["no match shown"]);
+    }
+
+    #[test]
+    fn tiny_terminals_do_not_panic() {
+        let path = long_transcript("tiny", 5);
+        let mut app = App::new(
+            PathBuf::from("/nonexistent"),
+            vec![session("a", "A title that is far too long to fit", path)],
+        );
+        app.filter = "question".into();
+        for (w, h) in [(1, 1), (5, 3), (10, 5), (20, 8), (3, 40)] {
+            screen(&mut app, w, h);
+        }
+    }
 }

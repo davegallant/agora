@@ -78,9 +78,12 @@ tell application "Ghostty"
   end repeat
   return out
 end tell"#;
-    osascript(SCRIPT, &[])
-        .unwrap_or_default()
-        .lines()
+    parse_terminals(&osascript(SCRIPT, &[]).unwrap_or_default())
+}
+
+/// Parse the script's output: one `id<TAB>title<TAB>cwd` line per terminal.
+fn parse_terminals(out: &str) -> Vec<Term> {
+    out.lines()
         .filter_map(|l| {
             let mut f = l.splitn(3, '\t');
             Some(Term {
@@ -190,5 +193,58 @@ mod tests {
         assert_eq!(shell_quote("abc-1.2"), "abc-1.2");
         assert_eq!(shell_quote("/a b/c"), "'/a b/c'");
         assert_eq!(shell_quote("it's"), r"'it'\''s'");
+    }
+
+    #[test]
+    fn more_titles() {
+        assert_eq!(parse_title(""), (String::new(), Glyph::None));
+        assert_eq!(parse_title("🔔"), (String::new(), Glyph::Bell));
+        assert_eq!(parse_title("⠋ Working"), ("Working".into(), Glyph::Busy));
+        assert_eq!(parse_title("· dots"), ("dots".into(), Glyph::Busy));
+        // A bell wins over a spinner, whichever comes first.
+        assert_eq!(parse_title("⠋ 🔔 x"), ("x".into(), Glyph::Bell));
+        assert_eq!(parse_title("🔔 ⠋ x"), ("x".into(), Glyph::Bell));
+        assert_eq!(parse_title("  padded  "), ("padded".into(), Glyph::None));
+        assert_eq!(parse_title("/tmp"), ("/tmp".into(), Glyph::None));
+        assert_eq!(parse_title("1 thing"), ("1 thing".into(), Glyph::None));
+        // Glyphs inside the title are part of it.
+        assert_eq!(parse_title("a ◐ b"), ("a ◐ b".into(), Glyph::None));
+        assert_eq!(parse_title("Été"), ("Été".into(), Glyph::None));
+    }
+
+    #[test]
+    fn more_quoting() {
+        assert_eq!(shell_quote(""), "''");
+        assert_eq!(shell_quote("_-./:@%+=,"), "_-./:@%+=,");
+        for s in ["$HOME", "a;b", "a*", "日本", "a\nb", "`x`", "~"] {
+            assert_eq!(shell_quote(s), format!("'{s}'"), "{s:?}");
+        }
+        assert_eq!(shell_quote("''"), r"''\'''\'''");
+    }
+
+    #[test]
+    fn terminal_listing() {
+        let out = "id1\tFix bug\t/w/a\nid2\tno cwd\n\tno id\t/w\nbare\nid3\ttab\tin\tcwd\n";
+        assert_eq!(
+            parse_terminals(out),
+            [
+                Term {
+                    id: "id1".into(),
+                    title: "Fix bug".into(),
+                    cwd: "/w/a".into()
+                },
+                Term {
+                    id: "id2".into(),
+                    title: "no cwd".into(),
+                    cwd: String::new()
+                },
+                Term {
+                    id: "id3".into(),
+                    title: "tab".into(),
+                    cwd: "in\tcwd".into()
+                },
+            ]
+        );
+        assert!(parse_terminals("").is_empty());
     }
 }

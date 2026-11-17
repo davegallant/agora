@@ -163,7 +163,7 @@ impl App {
         }
     }
 
-    fn rebuild_view(&mut self) {
+    pub fn rebuild_view(&mut self) {
         let keep = self.selected();
         let terms: Vec<String> = self
             .filter
@@ -588,5 +588,583 @@ mod tests {
         app.filter = "charlie".into();
         app.rebuild_view();
         assert_eq!(titles(&app), ["Charlie"], "new sessions are searchable");
+    }
+
+    use crate::ghostty::Term;
+    use std::fs;
+
+    fn tmpdir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("agora-app-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn with(agent: Agent, id: &str, title: &str, cwd: &str, age_secs: u64) -> Session {
+        Session {
+            agent,
+            cwd: cwd.into(),
+            ..session(id, title, age_secs)
+        }
+    }
+
+    /// A session backed by a real transcript holding `lines` of conversation.
+    fn on_disk(dir: &Path, id: &str, title: &str, lines: &[(bool, &str)]) -> Session {
+        let path = dir.join(format!("{id}.jsonl"));
+        let body: String = lines
+            .iter()
+            .map(|(user, text)| {
+                let kind = if *user { "user" } else { "assistant" };
+                format!(
+                    "{}\n",
+                    serde_json::json!({"type": kind, "cwd": "/w", "message": {"content": text}})
+                )
+            })
+            .collect();
+        fs::write(&path, body).unwrap();
+        Session {
+            path,
+            ..session(id, title, 0)
+        }
+    }
+
+    fn app(sessions: Vec<Session>) -> App {
+        App::new(PathBuf::from("/nonexistent"), sessions)
+    }
+
+    fn press(app: &mut App, code: KeyCode) -> Option<Exit> {
+        app.on_key(KeyEvent::new(code, KeyModifiers::NONE))
+    }
+
+    fn ctrl(app: &mut App, c: char) -> Option<Exit> {
+        app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL))
+    }
+
+    fn typed(app: &mut App, s: &str) {
+        for c in s.chars() {
+            assert!(press(app, KeyCode::Char(c)).is_none());
+        }
+    }
+
+    fn live(state: State) -> Live {
+        Live {
+            state,
+            term: None,
+            background: None,
+        }
+    }
+
+    fn quits(e: Option<Exit>) -> bool {
+        matches!(e, Some(Exit::Quit))
+    }
+
+    fn five() -> App {
+        app((0..5)
+            .map(|n| session(&format!("s{n}"), &format!("T{n}"), n * 10))
+            .collect())
+    }
+
+    #[test]
+    fn empty_app_has_no_selection() {
+        let mut a = app(Vec::new());
+        assert!(a.view.is_empty());
+        assert_eq!(a.table.selected(), None);
+        assert_eq!(a.selected(), None);
+        assert!(press(&mut a, KeyCode::Char('j')).is_none());
+        assert!(press(&mut a, KeyCode::Enter).is_none());
+        press(&mut a, KeyCode::Char('t'));
+        assert_eq!(a.table.selected(), None);
+    }
+
+    #[test]
+    fn newest_first_with_live_sessions_on_top() {
+        let mut a = app(vec![
+            session("a", "Newest", 0),
+            session("b", "Busy", 10),
+            session("c", "Needs", 20),
+            session("d", "Oldest", 30),
+            session("e", "Open", 40),
+        ]);
+        assert_eq!(titles(&a), ["Newest", "Busy", "Needs", "Oldest", "Open"]);
+        a.live.insert(1, live(State::Busy));
+        a.live.insert(2, live(State::NeedsYou));
+        a.live.insert(4, live(State::Open));
+        a.rebuild_view();
+        assert_eq!(titles(&a), ["Needs", "Busy", "Open", "Newest", "Oldest"]);
+        assert_eq!(a.live_count(), 3);
+    }
+
+    #[test]
+    fn title_filter_matches_every_word_anywhere() {
+        let mut a = app(vec![
+            with(Agent::Claude, "a", "Fix login bug", "/w/web", 0),
+            with(Agent::Codex, "b", "Fix flaky test", "/w/api", 10),
+            with(Agent::Pi, "c", "Write docs", "/w/web", 20),
+        ]);
+        let check = |a: &mut App, f: &str, want: &[&str]| {
+            a.filter = f.into();
+            a.rebuild_view();
+            assert_eq!(titles(a), want, "filter {f:?}");
+        };
+        check(&mut a, "fix", &["Fix login bug", "Fix flaky test"]);
+        check(&mut a, "FIX  bug", &["Fix login bug"]);
+        check(&mut a, "web", &["Fix login bug", "Write docs"]);
+        check(&mut a, "codex", &["Fix flaky test"]);
+        check(&mut a, "/w/api", &["Fix flaky test"]);
+        check(&mut a, "nothing", &[]);
+        assert_eq!(a.selected(), None);
+        check(
+            &mut a,
+            "",
+            &["Fix login bug", "Fix flaky test", "Write docs"],
+        );
+    }
+
+    #[test]
+    fn text_hits_join_the_view() {
+        let mut a = app(vec![session("a", "Alpha", 0), session("b", "Bravo", 10)]);
+        a.filter = "zebra".into();
+        a.rebuild_view();
+        assert!(a.view.is_empty());
+        a.text_hits.insert(1, "…a zebra…".into());
+        a.rebuild_view();
+        assert_eq!(titles(&a), ["Bravo"]);
+    }
+
+    #[test]
+    fn tab_cycles_agents_and_l_toggles_live() {
+        let mut a = app(vec![
+            with(Agent::Claude, "a", "C", "/w", 0),
+            with(Agent::Codex, "b", "X", "/w", 10),
+            with(Agent::Pi, "c", "P", "/w", 20),
+        ]);
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            press(&mut a, KeyCode::Tab);
+            seen.push((a.agent_filter, titles(&a).join(",")));
+        }
+        assert_eq!(
+            seen,
+            [
+                (Some(Agent::Claude), "C".to_string()),
+                (Some(Agent::Codex), "X".into()),
+                (Some(Agent::Pi), "P".into()),
+                (None, "C,X,P".into()),
+            ]
+        );
+
+        a.live.insert(1, live(State::Open));
+        press(&mut a, KeyCode::Char('l'));
+        assert!(a.live_only);
+        assert_eq!(titles(&a), ["X"]);
+        press(&mut a, KeyCode::Tab);
+        assert!(a.view.is_empty(), "live claude sessions: none");
+        press(&mut a, KeyCode::Char('l'));
+        assert_eq!(titles(&a), ["C"]);
+    }
+
+    #[test]
+    fn navigation_keys() {
+        let mut a = five();
+        let at = |a: &App| a.table.selected().unwrap();
+        assert_eq!(at(&a), 0);
+        press(&mut a, KeyCode::Char('j'));
+        press(&mut a, KeyCode::Down);
+        assert_eq!(at(&a), 2);
+        press(&mut a, KeyCode::Char('k'));
+        assert_eq!(at(&a), 1);
+        press(&mut a, KeyCode::Up);
+        press(&mut a, KeyCode::Up);
+        assert_eq!(at(&a), 0, "clamped at the top");
+        press(&mut a, KeyCode::Char('G'));
+        assert_eq!(at(&a), 4);
+        press(&mut a, KeyCode::Char('j'));
+        assert_eq!(at(&a), 4, "clamped at the bottom");
+        press(&mut a, KeyCode::Char('g'));
+        assert_eq!(at(&a), 0);
+        press(&mut a, KeyCode::End);
+        press(&mut a, KeyCode::Home);
+        assert_eq!(at(&a), 0);
+        press(&mut a, KeyCode::PageDown);
+        assert_eq!(at(&a), 4);
+        press(&mut a, KeyCode::PageUp);
+        assert_eq!(at(&a), 0);
+        ctrl(&mut a, 'd');
+        assert_eq!(at(&a), 4);
+        ctrl(&mut a, 'u');
+        assert_eq!(at(&a), 0);
+    }
+
+    #[test]
+    fn quitting() {
+        let mut a = five();
+        assert!(quits(press(&mut a, KeyCode::Char('q'))));
+        assert!(quits(press(&mut a, KeyCode::Esc)));
+        assert!(quits(ctrl(&mut a, 'c')));
+        // ctrl-c quits even while typing a filter.
+        press(&mut a, KeyCode::Char('/'));
+        assert!(quits(ctrl(&mut a, 'c')));
+    }
+
+    #[test]
+    fn typing_a_filter() {
+        let mut a = five();
+        press(&mut a, KeyCode::Char('/'));
+        assert!(a.filtering);
+        // Keys that are commands elsewhere are just text here.
+        typed(&mut a, "qT3");
+        assert_eq!(a.filter, "qT3");
+        assert!(a.view.is_empty());
+        press(&mut a, KeyCode::Backspace);
+        press(&mut a, KeyCode::Backspace);
+        press(&mut a, KeyCode::Backspace);
+        typed(&mut a, "t3");
+        assert_eq!(titles(&a), ["T3"]);
+        // Arrows still move while filtering; other keys are ignored.
+        press(&mut a, KeyCode::Down);
+        press(&mut a, KeyCode::F(1));
+        assert_eq!(a.filter, "t3");
+
+        press(&mut a, KeyCode::Enter);
+        assert!(!a.filtering);
+        assert_eq!(a.filter, "t3", "enter keeps the filter");
+        // Esc clears an applied filter before it quits.
+        assert!(press(&mut a, KeyCode::Esc).is_none());
+        assert_eq!(a.filter, "");
+        assert_eq!(a.view.len(), 5);
+
+        press(&mut a, KeyCode::Char('/'));
+        typed(&mut a, "abc");
+        ctrl(&mut a, 'u');
+        assert_eq!(a.filter, "");
+        assert!(a.filtering);
+        typed(&mut a, "abc");
+        press(&mut a, KeyCode::Esc);
+        assert!(!a.filtering);
+        assert_eq!(a.filter, "", "esc while typing clears and leaves");
+    }
+
+    #[test]
+    fn text_search_waits_for_three_chars() {
+        let mut a = five();
+        press(&mut a, KeyCode::Char('/'));
+        typed(&mut a, "ab");
+        assert!(a.search_due.is_none());
+        assert!(!a.searching());
+        typed(&mut a, " ");
+        assert!(a.search_due.is_none(), "whitespace doesn't count");
+        typed(&mut a, "c");
+        assert!(a.search_due.is_some());
+        assert!(a.searching());
+        let generation = a.search_gen;
+        press(&mut a, KeyCode::Backspace);
+        assert!(a.search_gen > generation, "each edit starts a new search");
+        assert!(a.search_due.is_none());
+    }
+
+    #[test]
+    fn selection_stays_on_its_session_as_the_view_changes() {
+        let mut a = five();
+        press(&mut a, KeyCode::Char('j'));
+        press(&mut a, KeyCode::Char('j'));
+        assert_eq!(a.selected(), Some(2));
+        a.live.insert(2, live(State::NeedsYou));
+        a.rebuild_view();
+        assert_eq!(a.selected(), Some(2));
+        assert_eq!(a.table.selected(), Some(0), "moved to the top with it");
+        // When it leaves the view, the row index is kept within bounds.
+        press(&mut a, KeyCode::Char('G'));
+        a.filter = "t0".into();
+        a.rebuild_view();
+        assert_eq!(a.table.selected(), Some(0));
+        assert_eq!(a.selected(), Some(0));
+    }
+
+    #[test]
+    fn statuses_clear_on_the_next_key() {
+        let mut a = five();
+        a.status = Some("hello".into());
+        press(&mut a, KeyCode::Char('j'));
+        assert_eq!(a.status, None);
+    }
+
+    #[test]
+    fn scrolling_the_preview() {
+        let mut a = five();
+        a.pane.top = 10;
+        a.pane.height = 20;
+        press(&mut a, KeyCode::Char('J'));
+        assert_eq!(a.pane.follow, Follow::Top(13));
+        press(&mut a, KeyCode::Char('K'));
+        assert_eq!(a.pane.follow, Follow::Top(7));
+        ctrl(&mut a, 'f');
+        assert_eq!(a.pane.follow, Follow::Top(28));
+        ctrl(&mut a, 'b');
+        assert_eq!(a.pane.follow, Follow::Top(0), "clamped at zero");
+        a.pane.top = 1;
+        a.scroll_preview(-50);
+        assert_eq!(a.pane.follow, Follow::Top(0));
+    }
+
+    #[test]
+    fn mouse_wheel_scrolls_the_pane_under_it() {
+        let mut a = five();
+        a.list_area = Rect::new(0, 0, 80, 10);
+        a.preview_area = Rect::new(0, 10, 80, 10);
+        a.pane.top = 5;
+        let wheel = |kind, row| MouseEvent {
+            kind,
+            column: 3,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        a.on_mouse(wheel(MouseEventKind::ScrollDown, 2));
+        a.on_mouse(wheel(MouseEventKind::ScrollDown, 2));
+        assert_eq!(a.table.selected(), Some(2));
+        a.on_mouse(wheel(MouseEventKind::ScrollUp, 2));
+        assert_eq!(a.table.selected(), Some(1));
+        assert_eq!(a.pane.follow, Follow::Bottom, "preview untouched");
+
+        a.on_mouse(wheel(MouseEventKind::ScrollDown, 12));
+        assert_eq!(a.pane.follow, Follow::Top(8));
+        a.pane.top = 8;
+        a.on_mouse(wheel(MouseEventKind::ScrollUp, 12));
+        assert_eq!(a.pane.follow, Follow::Top(5));
+        assert_eq!(a.table.selected(), Some(1));
+
+        // Outside both panes, and non-wheel events, do nothing.
+        a.on_mouse(wheel(MouseEventKind::ScrollDown, 30));
+        a.on_mouse(wheel(MouseEventKind::Moved, 2));
+        assert_eq!(a.table.selected(), Some(1));
+        assert_eq!(a.pane.follow, Follow::Top(5));
+    }
+
+    #[test]
+    fn preview_pane_starts_at_the_bottom_or_the_last_match() {
+        let dir = tmpdir("pane");
+        let s = on_disk(
+            &dir,
+            "p",
+            "Pane",
+            &[
+                (true, "find the needle"),
+                (false, "no hit"),
+                (true, "needle again"),
+            ],
+        );
+        let mut a = app(vec![s]);
+        let pane = a.preview_pane(0, 40);
+        assert_eq!(pane.follow, Follow::Bottom);
+        assert_eq!(pane.current, None);
+        assert!(pane.r.matches.is_empty());
+        assert_eq!(pane.r.rows.len(), 5);
+
+        a.filter = "needle".into();
+        let pane = a.preview_pane(0, 40);
+        assert_eq!(pane.r.matches, [0, 4]);
+        assert_eq!(pane.current, Some(1), "the most recent match");
+        assert_eq!(pane.follow, Follow::Match);
+
+        // n/N cycle through matches and wrap.
+        press(&mut a, KeyCode::Char('n'));
+        assert_eq!(a.pane.current, Some(0));
+        press(&mut a, KeyCode::Char('N'));
+        assert_eq!(a.pane.current, Some(1));
+        press(&mut a, KeyCode::Char('n'));
+        a.pane.follow = Follow::Top(0);
+        // Laying out again keeps the chosen match and the user's scroll.
+        let pane = a.preview_pane(0, 40);
+        assert_eq!(pane.current, Some(0));
+        assert_eq!(pane.follow, Follow::Top(0));
+
+        // A new filter starts over.
+        a.filter = "again".into();
+        let pane = a.preview_pane(0, 40);
+        assert_eq!(pane.current, Some(0));
+        assert_eq!(pane.r.matches, [4]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn jumping_without_matches_says_so() {
+        let mut a = five();
+        press(&mut a, KeyCode::Char('n'));
+        assert_eq!(a.status.as_deref(), Some("no matches in this preview"));
+        assert_eq!(a.pane.current, None);
+    }
+
+    #[test]
+    fn jumping_starts_from_the_last_match() {
+        let mut a = five();
+        a.pane.r.matches = vec![1, 2, 3];
+        a.jump_match(1);
+        assert_eq!(a.pane.current, Some(0));
+        a.pane.current = None;
+        a.jump_match(-1);
+        assert_eq!(a.pane.current, Some(1));
+        a.jump_match(5);
+        assert_eq!(a.pane.current, Some(0));
+    }
+
+    #[test]
+    fn merge_refreshes_the_preview_of_a_written_session() {
+        let dir = tmpdir("merge");
+        let s = on_disk(&dir, "m", "M", &[(true, "first")]);
+        let mut a = app(vec![s]);
+        assert_eq!(a.preview_pane(0, 40).r.rows.len(), 1);
+        let s = on_disk(&dir, "m", "M", &[(true, "first"), (false, "second")]);
+        a.merge(Changes {
+            updated: vec![s],
+            removed: Vec::new(),
+        });
+        assert_eq!(a.preview_pane(0, 40).r.rows.len(), 3);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn merge_ignores_unknown_removals_and_reloads_on_known_ones() {
+        let mut a = five();
+        a.merge(Changes {
+            updated: Vec::new(),
+            removed: vec![PathBuf::from("/elsewhere/x.jsonl")],
+        });
+        assert_eq!(a.sessions.len(), 5);
+        assert_eq!(a.status, None);
+
+        // Home is /nonexistent, so the reload finds nothing.
+        let gone = a.sessions[2].path.clone();
+        a.merge(Changes {
+            updated: Vec::new(),
+            removed: vec![gone],
+        });
+        assert!(a.sessions.is_empty());
+        assert_eq!(a.status.as_deref(), Some("reloaded 0 sessions"));
+        assert_eq!(a.table.selected(), None);
+    }
+
+    #[test]
+    fn reload_reads_home_and_keeps_the_selection() {
+        let home = tmpdir("reload");
+        let proj = home.join(".claude/projects/-w");
+        fs::create_dir_all(&proj).unwrap();
+        for (id, prompt) in [("one", "first"), ("two", "second")] {
+            fs::write(
+                proj.join(format!("{id}.jsonl")),
+                format!(
+                    "{}\n",
+                    serde_json::json!({"type":"user","cwd":"/w","message":{"content":prompt}})
+                ),
+            )
+            .unwrap();
+        }
+        let sessions = sessions::load_all(&home);
+        let mut a = App::new(home.clone(), sessions);
+        press(&mut a, KeyCode::Char('G'));
+        let picked = a.sessions[a.selected().unwrap()].path.clone();
+        press(&mut a, KeyCode::Char('r'));
+        assert_eq!(a.status.as_deref(), Some("reloaded 2 sessions"));
+        assert_eq!(a.sessions[a.selected().unwrap()].path, picked);
+        fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn open_resumes_attaches_or_jumps() {
+        let dir = tmpdir("open");
+        let mut a = app(vec![
+            with(Agent::Codex, "x", "Here", dir.to_str().unwrap(), 0),
+            with(Agent::Claude, "c", "Gone", "/nonexistent/dir", 10),
+        ]);
+        match press(&mut a, KeyCode::Enter) {
+            Some(Exit::Exec { cwd, argv }) => {
+                assert_eq!(cwd.as_deref(), dir.to_str());
+                assert_eq!(argv, ["codex", "resume", "x"]);
+            }
+            _ => panic!("expected a resume"),
+        }
+
+        press(&mut a, KeyCode::Char('j'));
+        assert!(press(&mut a, KeyCode::Enter).is_none());
+        assert_eq!(
+            a.status.as_deref(),
+            Some("/nonexistent/dir no longer exists")
+        );
+
+        // A background session attaches, wherever its cwd is.
+        a.live.insert(
+            1,
+            Live {
+                background: Some("bg1".into()),
+                ..live(State::NeedsYou)
+            },
+        );
+        match press(&mut a, KeyCode::Enter) {
+            Some(Exit::Exec { cwd, argv }) => {
+                assert_eq!(cwd, None);
+                assert_eq!(argv, ["claude", "attach", "bg1"]);
+            }
+            _ => panic!("expected an attach"),
+        }
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn open_with_a_tab_focuses_it_instead() {
+        let mut a = five();
+        a.live.insert(
+            0,
+            Live {
+                term: Some(Term {
+                    id: "T".into(),
+                    title: "T0".into(),
+                    cwd: "/w/proj".into(),
+                }),
+                ..live(State::Open)
+            },
+        );
+        a.rebuild_view();
+        // Focusing may fail without Ghostty; either way it stays in agora.
+        assert!(press(&mut a, KeyCode::Enter).is_none());
+        let status = a.status.unwrap();
+        assert!(
+            status == "jumped to “T0”" || status.starts_with("could not focus tab"),
+            "{status}"
+        );
+    }
+
+    #[test]
+    fn background_text_search_finds_sessions() {
+        let dir = tmpdir("search");
+        let mut a = app(vec![
+            on_disk(&dir, "a", "Alpha", &[(true, "talk about kubernetes")]),
+            on_disk(&dir, "b", "Bravo", &[(true, "nothing here")]),
+        ]);
+        press(&mut a, KeyCode::Char('/'));
+        typed(&mut a, "kubernetes");
+        assert!(a.view.is_empty(), "titles don't match");
+        a.search_due = Some(Instant::now());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while a.searching() {
+            assert!(Instant::now() < deadline, "search never finished");
+            a.poll_search();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(titles(&a), ["Alpha"]);
+        assert_eq!(a.text_hits[&0], "talk about kubernetes");
+        // A matching session previews in full, with the match current.
+        let pane = a.preview_pane(0, 40);
+        assert_eq!(pane.current, Some(0));
+
+        // Editing the filter drops the old hits.
+        press(&mut a, KeyCode::Backspace);
+        assert!(a.text_hits.is_empty());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn spinner_frames_are_braille() {
+        let a = five();
+        let f = a.spinner();
+        assert_eq!(f.chars().count(), 1);
+        assert!(('⠀'..='⣿').contains(&f.chars().next().unwrap()));
     }
 }

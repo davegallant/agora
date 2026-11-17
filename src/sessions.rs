@@ -578,4 +578,506 @@ mod tests {
         assert_eq!(read_head(&p, 7).unwrap(), "aaaa");
         assert_eq!(read_tail(&p, 7).unwrap(), "cccc\n");
     }
+
+    /// A fresh directory for one test, so tests running in parallel never
+    /// share files.
+    fn tmpdir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("agora-s-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write(path: &Path, lines: &[&str]) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let body: String = lines.iter().map(|l| format!("{l}\n")).collect();
+        fs::write(path, body).unwrap();
+    }
+
+    fn set_mtime(path: &Path, secs: u64) {
+        File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(secs))
+            .unwrap();
+    }
+
+    fn session(agent: Agent, id: &str, path: &str, cwd: &str) -> Session {
+        Session {
+            agent,
+            id: id.into(),
+            path: path.into(),
+            cwd: cwd.into(),
+            title: String::new(),
+            mtime: SystemTime::UNIX_EPOCH,
+        }
+    }
+
+    #[test]
+    fn agent_names() {
+        assert_eq!(Agent::Claude.name(), "claude");
+        assert_eq!(Agent::Codex.name(), "codex");
+        assert_eq!(Agent::Pi.name(), "pi");
+    }
+
+    #[test]
+    fn project_is_the_last_cwd_component() {
+        let p = |cwd| session(Agent::Claude, "x", "", cwd).project().to_string();
+        assert_eq!(p("/w/proj"), "proj");
+        assert_eq!(p("/w/proj/"), "proj");
+        assert_eq!(p("relative"), "relative");
+        assert_eq!(p("/"), "/");
+        assert_eq!(p(""), "");
+    }
+
+    #[test]
+    fn resume_argv_per_agent() {
+        let pi = session(Agent::Pi, "pi1", "/h/.pi/s/x.jsonl", "/w");
+        assert_eq!(pi.resume_argv(), ["pi", "--session", "/h/.pi/s/x.jsonl"]);
+        let codex = session(Agent::Codex, "cx", "/p", "/w");
+        assert_eq!(codex.resume_argv(), ["codex", "resume", "cx"]);
+    }
+
+    #[test]
+    fn clean_collapses_whitespace() {
+        assert_eq!(clean("  a\n\tb   c  "), "a b c");
+        assert_eq!(clean(" \n "), "");
+    }
+
+    #[test]
+    fn noise_detection() {
+        for t in [
+            "",
+            "<local-command-stdout>x",
+            "<command-name>/clear",
+            "Caveat: the messages below",
+            "<bash-input>ls",
+            "<user-prompt-submit-hook>",
+            "<system-reminder>be nice",
+            "<environment_context>",
+            "<permissions instructions>",
+            "<user_instructions>",
+            "# AGENTS.md instructions for /w",
+            "[Request interrupted by user]",
+        ] {
+            assert!(is_noise(t), "{t:?} should be noise");
+        }
+        for t in ["fix the bug", " <command-name>", "Caveat", "## AGENTS.md"] {
+            assert!(!is_noise(t), "{t:?} should not be noise");
+        }
+    }
+
+    #[test]
+    fn content_text_keeps_only_text_blocks() {
+        let v: Value = serde_json::from_str(
+            r#"[{"type":"text","text":"a"},{"type":"tool_use","text":"no"},
+                {"type":"input_text","text":"b"},{"type":"output_text","text":"c"},
+                {"type":"thinking","thinking":"no"},{"type":"text"}]"#,
+        )
+        .unwrap();
+        assert_eq!(content_text(&v), "a\nb\nc");
+        assert_eq!(content_text(&Value::String("plain".into())), "plain");
+        assert_eq!(content_text(&Value::Null), "");
+        assert_eq!(content_text(&serde_json::json!(42)), "");
+    }
+
+    #[test]
+    fn read_head_and_tail_of_short_files_are_whole() {
+        let p = tmpdir("short").join("f.jsonl");
+        write(&p, &["one", "two"]);
+        assert_eq!(read_head(&p, 1024).unwrap(), "one\ntwo\n");
+        assert_eq!(read_tail(&p, 1024).unwrap(), "one\ntwo\n");
+        assert!(read_head(&p.with_extension("missing"), 10).is_err());
+        assert!(read_tail(&p.with_extension("missing"), 10).is_err());
+    }
+
+    #[test]
+    fn claude_without_cwd_is_skipped() {
+        let p = tmpdir("nocwd").join("x.jsonl");
+        write(&p, &[r#"{"type":"user","message":{"content":"hi"}}"#]);
+        assert!(parse_claude(&p, SystemTime::UNIX_EPOCH).is_none());
+    }
+
+    #[test]
+    fn claude_takes_cwd_from_first_line_that_has_one() {
+        let p = tmpdir("latecwd").join("x.jsonl");
+        write(
+            &p,
+            &[
+                "not json",
+                r#"{"type":"summary"}"#,
+                r#"{"type":"user","cwd":"/first","message":{"content":"hi"}}"#,
+                r#"{"type":"user","cwd":"/second","message":{"content":"again"}}"#,
+            ],
+        );
+        let s = parse_claude(&p, SystemTime::UNIX_EPOCH).unwrap();
+        assert_eq!(s.cwd, "/first");
+        assert_eq!(s.title, "hi");
+    }
+
+    #[test]
+    fn claude_with_only_noise_has_placeholder_title() {
+        let p = tmpdir("noise").join("x.jsonl");
+        write(
+            &p,
+            &[
+                r#"{"type":"user","cwd":"/w","message":{"content":"<command-name>/clear</command-name>"}}"#,
+                r#"{"type":"ai-title","aiTitle":""}"#,
+            ],
+        );
+        let s = parse_claude(&p, SystemTime::UNIX_EPOCH).unwrap();
+        assert_eq!(s.title, "(no prompt)");
+    }
+
+    #[test]
+    fn claude_title_written_past_the_head_is_found_in_the_tail() {
+        let p = tmpdir("bigtitle").join("x.jsonl");
+        let filler = format!(
+            r#"{{"type":"assistant","message":{{"content":"{}"}}}}"#,
+            "x".repeat(HEAD_BYTES as usize)
+        );
+        write(
+            &p,
+            &[
+                r#"{"type":"user","cwd":"/w","message":{"content":"first prompt"}}"#,
+                r#"{"type":"ai-title","aiTitle":"Early"}"#,
+                &filler,
+                r#"{"type":"ai-title","aiTitle":"Late"}"#,
+            ],
+        );
+        assert_eq!(
+            parse_claude(&p, SystemTime::UNIX_EPOCH).unwrap().title,
+            "Late"
+        );
+    }
+
+    #[test]
+    fn codex_requires_session_meta_and_cwd() {
+        let dir = tmpdir("codexmeta");
+        let no_meta = dir.join("a.jsonl");
+        write(
+            &no_meta,
+            &[
+                r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}}"#,
+            ],
+        );
+        assert!(parse_codex(&no_meta, SystemTime::UNIX_EPOCH, &HashMap::new()).is_none());
+
+        let no_cwd = dir.join("b.jsonl");
+        write(
+            &no_cwd,
+            &[r#"{"type":"session_meta","payload":{"id":"x"}}"#],
+        );
+        assert!(parse_codex(&no_cwd, SystemTime::UNIX_EPOCH, &HashMap::new()).is_none());
+
+        // No thread_source at all: an ordinary user session.
+        let plain = dir.join("c.jsonl");
+        write(
+            &plain,
+            &[r#"{"type":"session_meta","payload":{"id":"x","cwd":"/w"}}"#],
+        );
+        let s = parse_codex(&plain, SystemTime::UNIX_EPOCH, &HashMap::new()).unwrap();
+        assert_eq!((s.id.as_str(), s.title.as_str()), ("x", "(no prompt)"));
+        assert_eq!(s.agent, Agent::Codex);
+    }
+
+    #[test]
+    fn codex_title_index() {
+        let home = tmpdir("codexidx");
+        assert!(codex_titles(&home).is_empty(), "missing index");
+        write(
+            &home.join(".codex/session_index.jsonl"),
+            &[
+                r#"{"id":"a","thread_name":"Alpha"}"#,
+                r#"{"id":"b","thread_name":""}"#,
+                r#"{"id":"c"}"#,
+                "garbage",
+                r#"{"id":"a","thread_name":"Alpha renamed"}"#,
+            ],
+        );
+        let t = codex_titles(&home);
+        assert_eq!(t.len(), 1);
+        assert_eq!(t["a"], "Alpha renamed", "later entries win");
+    }
+
+    #[test]
+    fn pi_requires_session_header() {
+        let dir = tmpdir("pihdr");
+        let p = dir.join("x.jsonl");
+        write(
+            &p,
+            &[r#"{"type":"message","message":{"role":"user","content":"hi"}}"#],
+        );
+        assert!(parse_pi(&p, SystemTime::UNIX_EPOCH).is_none());
+
+        let q = dir.join("y.jsonl");
+        write(&q, &[r#"{"type":"session","id":"p","cwd":"/w"}"#]);
+        let s = parse_pi(&q, SystemTime::UNIX_EPOCH).unwrap();
+        assert_eq!(s.title, "(no prompt)");
+        assert_eq!(s.resume_argv(), ["pi", "--session", q.to_str().unwrap()]);
+    }
+
+    #[test]
+    fn jsonl_files_only_at_the_given_depth() {
+        let dir = tmpdir("depth");
+        for f in ["top.jsonl", "a/one.jsonl", "a/b/deep.jsonl", "a/notes.txt"] {
+            write(&dir.join(f), &["{}"]);
+        }
+        let names = |depth| {
+            let mut out = Vec::new();
+            jsonl_files(&dir, depth, &mut out);
+            let mut n: Vec<String> = out
+                .iter()
+                .map(|(p, _)| p.file_name().unwrap().to_string_lossy().into_owned())
+                .collect();
+            n.sort();
+            n
+        };
+        assert_eq!(names(0), ["top.jsonl"]);
+        assert_eq!(names(1), ["one.jsonl"]);
+        assert_eq!(names(2), ["deep.jsonl"]);
+        let mut out = Vec::new();
+        jsonl_files(&dir.join("missing"), 1, &mut out);
+        assert!(out.is_empty());
+    }
+
+    /// A home with one transcript per agent, plus files to be ignored.
+    fn seeded_home(tag: &str) -> PathBuf {
+        let home = tmpdir(tag);
+        let claude = home.join(".claude/projects/-w-a/c1.jsonl");
+        write(
+            &claude,
+            &[r#"{"type":"user","cwd":"/w/a","message":{"content":"claude prompt"}}"#],
+        );
+        let codex = home.join(".codex/sessions/2026/01/02/rollout-1.jsonl");
+        write(
+            &codex,
+            &[
+                r#"{"type":"session_meta","payload":{"id":"x1","cwd":"/w/b"}}"#,
+                r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"codex prompt"}]}}"#,
+            ],
+        );
+        write(
+            &home.join(".codex/session_index.jsonl"),
+            &[r#"{"id":"x1","thread_name":"Codex thread"}"#],
+        );
+        let pi = home.join(".pi/agent/sessions/-w-c/1_p1.jsonl");
+        write(
+            &pi,
+            &[
+                r#"{"type":"session","id":"p1","cwd":"/w/c"}"#,
+                r#"{"type":"message","message":{"role":"user","content":"pi prompt"}}"#,
+            ],
+        );
+        // Unreadable as a session, wrong depth, wrong extension.
+        write(&home.join(".claude/projects/-w-a/junk.jsonl"), &["nope"]);
+        write(&home.join(".claude/projects/stray.jsonl"), &["{}"]);
+        write(&home.join(".codex/sessions/2026/01/02/notes.md"), &["x"]);
+        set_mtime(&claude, 300);
+        set_mtime(&codex, 100);
+        set_mtime(&pi, 200);
+        home
+    }
+
+    #[test]
+    fn load_all_reads_every_agent_newest_first() {
+        let home = seeded_home("loadall");
+        let sessions = load_all(&home);
+        let got: Vec<(Agent, &str, &str, &str)> = sessions
+            .iter()
+            .map(|s| (s.agent, s.id.as_str(), s.title.as_str(), s.cwd.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (Agent::Claude, "c1", "claude prompt", "/w/a"),
+                (Agent::Pi, "p1", "pi prompt", "/w/c"),
+                (Agent::Codex, "x1", "Codex thread", "/w/b"),
+            ]
+        );
+        assert_eq!(
+            sessions[0].mtime,
+            SystemTime::UNIX_EPOCH + Duration::from_secs(300)
+        );
+        fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn load_all_of_an_empty_home() {
+        assert!(load_all(&tmpdir("empty")).is_empty());
+        assert!(load_all(Path::new("/nonexistent/agora")).is_empty());
+    }
+
+    #[test]
+    fn message_of_each_agent() {
+        let j = |s: &str| serde_json::from_str::<Value>(s).unwrap();
+        let m = message_of(
+            Agent::Claude,
+            &j(r#"{"type":"assistant","message":{"content":"  hi  "}}"#),
+        )
+        .unwrap();
+        assert!(!m.user);
+        assert_eq!(m.text, "hi", "trimmed");
+
+        for (agent, line) in [
+            // Meta lines, other roles, empty and noisy user text are skipped.
+            (
+                Agent::Claude,
+                r#"{"type":"user","isMeta":true,"message":{"content":"x"}}"#,
+            ),
+            (Agent::Claude, r#"{"type":"ai-title","aiTitle":"t"}"#),
+            (
+                Agent::Claude,
+                r#"{"type":"user","message":{"content":"  "}}"#,
+            ),
+            (
+                Agent::Claude,
+                r#"{"type":"user","message":{"content":"<system-reminder>x"}}"#,
+            ),
+            (Agent::Claude, r#"{"message":{"content":"no type"}}"#),
+            (
+                Agent::Codex,
+                r#"{"type":"response_item","payload":{"type":"function_call","role":"user"}}"#,
+            ),
+            (
+                Agent::Codex,
+                r#"{"type":"event_msg","payload":{"type":"message","role":"user","content":"x"}}"#,
+            ),
+            (
+                Agent::Codex,
+                r#"{"type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"x"}]}}"#,
+            ),
+            (
+                Agent::Pi,
+                r#"{"type":"message","message":{"role":"toolResult","content":"x"}}"#,
+            ),
+            (
+                Agent::Pi,
+                r#"{"type":"session","message":{"role":"user","content":"x"}}"#,
+            ),
+        ] {
+            assert!(message_of(agent, &j(line)).is_none(), "{line}");
+        }
+
+        // Noise filtering applies to the user only.
+        let m = message_of(
+            Agent::Claude,
+            &j(r#"{"type":"assistant","message":{"content":"<command-name> is a tag"}}"#),
+        );
+        assert!(m.is_some());
+
+        let m = message_of(
+            Agent::Codex,
+            &j(r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"q"}]}}"#),
+        )
+        .unwrap();
+        assert!(m.user && m.text == "q");
+        let m = message_of(
+            Agent::Pi,
+            &j(r#"{"type":"message","message":{"role":"user","content":"p"}}"#),
+        )
+        .unwrap();
+        assert!(m.user && m.text == "p");
+    }
+
+    #[test]
+    fn preview_keeps_the_last_max_messages() {
+        let p = tmpdir("max").join("x.jsonl");
+        let lines: Vec<String> = (0..10)
+            .map(|n| format!(r#"{{"type":"user","cwd":"/w","message":{{"content":"m{n}"}}}}"#))
+            .collect();
+        write(&p, &lines.iter().map(String::as_str).collect::<Vec<_>>());
+        let s = parse_claude(&p, SystemTime::UNIX_EPOCH).unwrap();
+        let texts: Vec<String> = preview(&s, 3, false).into_iter().map(|m| m.text).collect();
+        assert_eq!(texts, ["m7", "m8", "m9"]);
+        assert!(preview(&s, 0, false).is_empty());
+        assert_eq!(preview(&s, 100, false).len(), 10);
+    }
+
+    #[test]
+    fn preview_reads_the_whole_file_only_when_full() {
+        let p = tmpdir("full").join("x.jsonl");
+        let filler = format!(
+            r#"{{"type":"assistant","message":{{"content":"{}"}}}}"#,
+            "y".repeat(PREVIEW_BYTES as usize)
+        );
+        write(
+            &p,
+            &[
+                r#"{"type":"user","cwd":"/w","message":{"content":"opening"}}"#,
+                &filler,
+                r#"{"type":"user","message":{"content":"closing"}}"#,
+            ],
+        );
+        let s = parse_claude(&p, SystemTime::UNIX_EPOCH).unwrap();
+        let tail: Vec<String> = preview(&s, 100, false)
+            .into_iter()
+            .map(|m| m.text)
+            .collect();
+        assert_eq!(tail, ["closing"], "the filler line is cut, so skipped");
+        let full = preview(&s, 100, true);
+        assert_eq!(full.len(), 3);
+        assert_eq!(full[0].text, "opening");
+    }
+
+    #[test]
+    fn preview_of_a_missing_file_is_empty() {
+        let s = session(Agent::Claude, "x", "/nonexistent/x.jsonl", "/w");
+        assert!(preview(&s, 10, true).is_empty());
+    }
+
+    #[test]
+    fn watcher_reports_rewrites_and_files_that_stop_parsing() {
+        let home = tmpdir("watch2");
+        let path = home.join(".claude/projects/-w/s.jsonl");
+        write(
+            &path,
+            &[r#"{"type":"user","cwd":"/w","message":{"content":"before"}}"#],
+        );
+        set_mtime(&path, 1000);
+        let rx = spawn_watcher(home.clone(), Duration::from_millis(20));
+        let wait = || rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+
+        write(
+            &path,
+            &[
+                r#"{"type":"user","cwd":"/w","message":{"content":"before"}}"#,
+                r#"{"type":"ai-title","aiTitle":"After"}"#,
+            ],
+        );
+        set_mtime(&path, 2000);
+        let c = wait();
+        assert_eq!(c.updated.len(), 1);
+        assert_eq!(c.updated[0].title, "After");
+        assert!(c.removed.is_empty());
+
+        // Still on disk, but no longer a session: reported as removed.
+        write(&path, &["not a session"]);
+        set_mtime(&path, 3000);
+        let c = wait();
+        assert!(c.updated.is_empty());
+        assert_eq!(c.removed, vec![path.clone()]);
+        fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn watcher_rereads_codex_titles() {
+        let home = tmpdir("watchcodex");
+        let rx = spawn_watcher(home.clone(), Duration::from_millis(20));
+        std::thread::sleep(Duration::from_millis(100));
+        write(
+            &home.join(".codex/session_index.jsonl"),
+            &[r#"{"id":"x9","thread_name":"Named"}"#],
+        );
+        write(
+            &home.join(".codex/sessions/2026/02/03/rollout-9.jsonl"),
+            &[r#"{"type":"session_meta","payload":{"id":"x9","cwd":"/w"}}"#],
+        );
+        let c = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(c.updated.len(), 1);
+        assert_eq!(c.updated[0].title, "Named");
+        fs::remove_dir_all(&home).unwrap();
+    }
 }

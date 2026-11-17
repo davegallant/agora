@@ -283,4 +283,203 @@ mod tests {
         }
         assert_eq!(hits, vec![7]);
     }
+
+    fn collect(s: &Searcher, generation: u64) -> (Vec<usize>, Vec<Progress>) {
+        let mut hits = Vec::new();
+        let mut seen = Vec::new();
+        loop {
+            let p = s.results.recv_timeout(Duration::from_secs(5)).unwrap();
+            if p.generation != generation {
+                continue;
+            }
+            hits.extend(p.hits.iter().map(|h| h.idx));
+            let finished = p.finished;
+            seen.push(p);
+            if finished {
+                hits.sort();
+                return (hits, seen);
+            }
+        }
+    }
+
+    #[test]
+    fn terms_are_lowercase_words() {
+        assert_eq!(terms("  Foo   BAR\tbaz "), ["foo", "bar", "baz"]);
+        assert!(terms("").is_empty());
+        assert!(terms("   ").is_empty());
+        // Only ASCII is folded, matching the byte search.
+        assert_eq!(terms("ÉCOLE"), ["École"]);
+    }
+
+    #[test]
+    fn char_boundaries() {
+        let s = "aé"; // 'é' is bytes 1..3
+        assert_eq!(floor_boundary(s, 2), 1);
+        assert_eq!(ceil_boundary(s, 2), 3);
+        assert_eq!(floor_boundary(s, 0), 0);
+        assert_eq!(ceil_boundary(s, 3), 3);
+        assert_eq!(ceil_boundary(s, 10), 10, "past the end is left alone");
+    }
+
+    #[test]
+    fn snippets() {
+        assert_eq!(snippet("short text", 0, 5), "short text");
+        assert_eq!(snippet("a\n\n   b\tc", 0, 1), "a b c");
+        let long = format!("{}needle{}", "a ".repeat(10), "b ".repeat(100));
+        let s = snippet(&long, 20, 6);
+        assert!(!s.starts_with('…') && s.ends_with('…'), "{s}");
+        let long = format!("{}needle", "a ".repeat(100));
+        let s = snippet(&long, 200, 6);
+        assert!(s.starts_with('…') && !s.ends_with('…'), "{s}");
+        assert!(s.ends_with("needle"));
+    }
+
+    #[test]
+    fn search_file_edge_cases() {
+        let p = file("edge.jsonl", CLAUDE);
+        assert!(search_file(&p, Agent::Claude, &[]).is_none());
+        assert!(search_file(&p.with_extension("gone"), Agent::Claude, &terms("tfc")).is_none());
+        // Every term must match somewhere.
+        assert!(search_file(&p, Agent::Claude, &terms("drifted nowhere")).is_none());
+        // JSON keys are not conversation text.
+        assert!(search_file(&p, Agent::Claude, &terms("content")).is_none());
+        assert!(search_file(&p, Agent::Claude, &terms("assistant")).is_none());
+    }
+
+    #[test]
+    fn search_skips_injected_user_context() {
+        let p = file(
+            "noise.jsonl",
+            concat!(
+                r#"{"type":"user","message":{"content":"<system-reminder>magicword</system-reminder>"}}"#,
+                "\n",
+                r#"{"type":"user","isMeta":true,"message":{"content":"othermagic"}}"#,
+                "\n",
+            ),
+        );
+        assert!(search_file(&p, Agent::Claude, &terms("magicword")).is_none());
+        assert!(search_file(&p, Agent::Claude, &terms("othermagic")).is_none());
+    }
+
+    #[test]
+    fn snippet_comes_from_the_earliest_matching_message() {
+        let p = file(
+            "order.jsonl",
+            concat!(
+                r#"{"type":"user","message":{"content":"first mentions beta"}}"#,
+                "\n",
+                r#"{"type":"assistant","message":{"content":"then alpha shows up"}}"#,
+                "\n",
+            ),
+        );
+        let snip = search_file(&p, Agent::Claude, &terms("alpha beta")).unwrap();
+        assert_eq!(snip, "first mentions beta");
+    }
+
+    #[test]
+    fn searches_codex_and_pi_transcripts() {
+        let codex = file(
+            "codex.jsonl",
+            concat!(
+                r#"{"type":"session_meta","payload":{"id":"x","cwd":"/w","instructions":"kubernetes"}}"#,
+                "\n",
+                r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Deploy to Kubernetes now"}]}}"#,
+                "\n",
+            ),
+        );
+        let snip = search_file(&codex, Agent::Codex, &terms("kubernetes")).unwrap();
+        assert_eq!(snip, "Deploy to Kubernetes now");
+        // Read as the wrong agent, nothing is conversation text.
+        assert!(search_file(&codex, Agent::Pi, &terms("kubernetes")).is_none());
+
+        let pi = file(
+            "pi.jsonl",
+            concat!(
+                r#"{"type":"session","id":"p","cwd":"/w"}"#,
+                "\n",
+                r#"{"type":"message","message":{"role":"user","content":[{"type":"text","text":"Rename the Widget"}]}}"#,
+                "\n",
+            ),
+        );
+        assert!(search_file(&pi, Agent::Pi, &terms("widget")).is_some());
+    }
+
+    #[test]
+    fn empty_search_finishes_at_once() {
+        let s = Searcher::spawn();
+        s.start(3, terms("x"), Arc::new(Vec::new()));
+        let (hits, seen) = collect(&s, 3);
+        assert!(hits.is_empty());
+        assert_eq!(seen.len(), 1);
+        assert_eq!((seen[0].done, seen[0].total), (0, 0));
+    }
+
+    #[test]
+    fn progress_is_reported_while_searching() {
+        let p = file(
+            "miss.jsonl",
+            r#"{"type":"user","message":{"content":"nothing"}}"#,
+        );
+        let files: Files = Arc::new((0..130).map(|i| (i, Agent::Claude, p.clone())).collect());
+        let s = Searcher::spawn();
+        s.start(1, terms("absent"), files);
+        let (hits, seen) = collect(&s, 1);
+        assert!(hits.is_empty());
+        let last = seen.last().unwrap();
+        assert_eq!((last.done, last.total), (130, 130));
+        assert!(
+            seen.iter().any(|p| !p.finished && p.done % 64 == 0),
+            "batches every 64 files"
+        );
+        assert!(seen.iter().all(|p| p.total == 130));
+    }
+
+    #[test]
+    fn every_matching_file_is_reported_once() {
+        let hit = file("many-hit.jsonl", CLAUDE);
+        let miss = file(
+            "many-miss.jsonl",
+            r#"{"type":"user","message":{"content":"x"}}"#,
+        );
+        let files: Files = Arc::new(
+            (0..40)
+                .map(|i| {
+                    (
+                        i,
+                        Agent::Claude,
+                        if i % 3 == 0 {
+                            hit.clone()
+                        } else {
+                            miss.clone()
+                        },
+                    )
+                })
+                .collect(),
+        );
+        let s = Searcher::spawn();
+        s.start(1, terms("drifted"), files);
+        let (hits, _) = collect(&s, 1);
+        assert_eq!(hits, (0..40).filter(|i| i % 3 == 0).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn a_newer_search_replaces_an_older_one() {
+        let p = file("new-a.jsonl", CLAUDE);
+        let q = file(
+            "new-b.jsonl",
+            r#"{"type":"user","message":{"content":"unrelated"}}"#,
+        );
+        let files: Files = Arc::new(vec![(7, Agent::Claude, p), (8, Agent::Claude, q)]);
+        let s = Searcher::spawn();
+        s.start(1, terms("drifted"), files.clone());
+        s.start(2, terms("unrelated"), files.clone());
+        let (hits, _) = collect(&s, 2);
+        assert_eq!(hits, [8]);
+
+        // Searching again after a cancel works.
+        s.cancel(3);
+        s.start(4, terms("tfc"), files);
+        let (hits, _) = collect(&s, 4);
+        assert_eq!(hits, [7]);
+    }
 }

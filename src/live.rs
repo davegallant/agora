@@ -44,7 +44,12 @@ fn claude_agents() -> HashMap<String, ClaudeLive> {
     let Ok(out) = Command::new("claude").args(["agents", "--json"]).output() else {
         return HashMap::new();
     };
-    let Ok(Value::Array(items)) = serde_json::from_slice::<Value>(&out.stdout) else {
+    parse_agents(&out.stdout)
+}
+
+/// Parse `claude agents --json`: session id -> what is running it.
+fn parse_agents(json: &[u8]) -> HashMap<String, ClaudeLive> {
+    let Ok(Value::Array(items)) = serde_json::from_slice::<Value>(json) else {
         return HashMap::new();
     };
     items
@@ -200,5 +205,129 @@ mod tests {
         assert_eq!(live[&3].state, State::NeedsYou);
         assert_eq!(live[&3].background.as_deref(), Some("abcd"));
         assert!(!live.contains_key(&4));
+    }
+
+    #[test]
+    fn claude_states() {
+        for s in ["blocked", "needs_input", "waiting", "input"] {
+            assert_eq!(claude_state(s), State::NeedsYou, "{s}");
+        }
+        for s in ["running", "busy", "working"] {
+            assert_eq!(claude_state(s), State::Busy, "{s}");
+        }
+        for s in ["idle", "", "Running"] {
+            assert_eq!(claude_state(s), State::Open, "{s}");
+        }
+        assert!(State::NeedsYou < State::Busy && State::Busy < State::Open);
+    }
+
+    #[test]
+    fn agents_json() {
+        assert!(parse_agents(b"").is_empty());
+        assert!(parse_agents(b"not json").is_empty());
+        assert!(parse_agents(br#"{"sessionId":"x"}"#).is_empty());
+        let a = parse_agents(
+            br#"[
+                {"sessionId":"s1","kind":"interactive","id":"i1","state":"running"},
+                {"sessionId":"s2","kind":"background","id":"b2","state":"blocked"},
+                {"sessionId":"s3","kind":"background"},
+                {"kind":"background","id":"orphan"},
+                {"sessionId":"s4"}
+            ]"#,
+        );
+        assert_eq!(a.len(), 4);
+        assert_eq!(
+            a["s1"].background, None,
+            "interactive ids are not attachable"
+        );
+        assert_eq!(a["s1"].state.as_deref(), Some("running"));
+        assert_eq!(a["s2"].background.as_deref(), Some("b2"));
+        assert_eq!(a["s3"].background, None);
+        assert_eq!(a["s4"].state, None);
+    }
+
+    #[test]
+    fn tab_title_matching() {
+        let fix = s(Agent::Claude, "c", "Fix bug", "/w");
+        assert!(title_matches("Fix bug", &fix));
+        assert!(title_matches("Fix bug | proj", &fix));
+        assert!(!title_matches("Fix bugs", &fix));
+        assert!(!title_matches("Fix bug|proj", &fix));
+        assert!(!title_matches("fix bug", &fix));
+        assert!(!title_matches("Fix", &fix));
+        let untitled = s(Agent::Claude, "c", "", "/w");
+        assert!(!title_matches("", &untitled));
+        assert!(!title_matches(" | proj", &untitled));
+    }
+
+    #[test]
+    fn nothing_running() {
+        let sessions = vec![s(Agent::Claude, "c", "T", "/w")];
+        assert!(resolve(&sessions, &Snapshot::default()).is_empty());
+        assert!(resolve(&[], &Snapshot::default()).is_empty());
+    }
+
+    #[test]
+    fn tabs_without_a_cwd_match_any_session() {
+        let sessions = vec![s(Agent::Pi, "p", "Spinning", "/w/p")];
+        let snap = Snapshot {
+            terms: vec![term("T", "⠋ Spinning", "")],
+            ..Default::default()
+        };
+        let live = resolve(&sessions, &snap);
+        assert_eq!(live[&0].state, State::Busy);
+        assert_eq!(live[&0].background, None);
+    }
+
+    #[test]
+    fn each_tab_claims_the_newest_unclaimed_session() {
+        let sessions = vec![
+            s(Agent::Claude, "new", "Same", "/w"),
+            s(Agent::Claude, "old", "Same", "/w"),
+            s(Agent::Claude, "older", "Same", "/w"),
+        ];
+        let snap = Snapshot {
+            terms: vec![term("T1", "Same", "/w"), term("T2", "✳ Same", "/w")],
+            ..Default::default()
+        };
+        let live = resolve(&sessions, &snap);
+        assert_eq!(live[&0].term.as_ref().unwrap().id, "T1");
+        assert_eq!(live[&1].term.as_ref().unwrap().id, "T2");
+        assert!(!live.contains_key(&2));
+        assert!(live.values().all(|l| l.state == State::Open));
+    }
+
+    #[test]
+    fn claude_agents_refine_tab_state() {
+        let sessions = vec![
+            s(Agent::Claude, "c1", "One", "/w"),
+            s(Agent::Claude, "c2", "Two", "/w"),
+            s(Agent::Codex, "c3", "Three", "/w"),
+            s(Agent::Claude, "c4", "Four", "/w"),
+        ];
+        let mut snap = Snapshot {
+            terms: vec![term("T1", "One", "/w"), term("T2", "🔔 Two", "/w")],
+            ..Default::default()
+        };
+        let agent = |state: Option<&str>| ClaudeLive {
+            background: None,
+            state: state.map(String::from),
+        };
+        // An open tab whose agent reports work in progress is busy.
+        snap.claude.insert("c1".into(), agent(Some("running")));
+        // The more urgent of the two states wins.
+        snap.claude.insert("c2".into(), agent(Some("running")));
+        // Session ids from `claude agents` only apply to Claude sessions.
+        snap.claude.insert("c3".into(), agent(Some("blocked")));
+        // A running agent with no state is open, even without a tab.
+        snap.claude.insert("c4".into(), agent(None));
+
+        let live = resolve(&sessions, &snap);
+        assert_eq!(live[&0].state, State::Busy);
+        assert_eq!(live[&0].term.as_ref().unwrap().id, "T1");
+        assert_eq!(live[&1].state, State::NeedsYou);
+        assert!(!live.contains_key(&2));
+        assert_eq!(live[&3].state, State::Open);
+        assert!(live[&3].term.is_none());
     }
 }
