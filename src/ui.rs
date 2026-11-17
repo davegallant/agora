@@ -299,6 +299,20 @@ fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
             body_area,
             &mut sb,
         );
+        // Tick each match's place on the scrollbar; the current one stands out.
+        let x = body_area.right().saturating_sub(1);
+        let at = |row: usize| body_area.y + (row * height.saturating_sub(1) / (total - 1)) as u16;
+        let buf = f.buffer_mut();
+        for &row in &pane.r.matches {
+            if let Some(c) = buf.cell_mut((x, at(row))) {
+                c.set_symbol("━").set_fg(Color::Yellow);
+            }
+        }
+        if let Some(&row) = pane.current.and_then(|c| pane.r.matches.get(c)) {
+            if let Some(c) = buf.cell_mut((x, at(row))) {
+                c.set_symbol("◆").set_fg(Color::LightRed);
+            }
+        }
     }
 }
 
@@ -618,7 +632,9 @@ mod tests {
         app.pane.current = Some(0);
         app.pane.follow = Follow::Match;
         let s = screen(&mut app, 80, 24);
-        assert_has(&s, &[" 1/40 ", "▌ question 0 "]);
+        assert_has(&s, &[" 1/40 ", "▶ question 0 "]);
+        // The scrollbar ticks every match and marks the current one.
+        assert_has(&s, &["━", "◆"]);
         // Every word of the filter is highlighted on its own.
         app.filter = "question 1".into();
         assert_has(&screen(&mut app, 80, 24), &[" 53/53 "]);

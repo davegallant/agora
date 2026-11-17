@@ -1,5 +1,6 @@
 //! Render a conversation for the preview pane: word-wrapped rows with a role
-//! gutter on every row, and search terms highlighted.
+//! gutter on every row. Only the current search match is highlighted, and its
+//! row's gutter points at it, so there is one place to look.
 //!
 //! Wrapping is done here rather than by `Paragraph` so the row count, and the
 //! row each match lands on, are exact; scrolling to a match depends on it.
@@ -15,19 +16,15 @@ pub struct Rendered {
     pub matches: Vec<usize>,
 }
 
+/// Gutter of the row holding the current match.
+pub const MARKER: &str = "▶ ";
+
 const GUTTER: usize = 2;
 
-fn match_style() -> Style {
+pub fn current_style() -> Style {
     Style::new()
         .fg(Color::Black)
         .bg(Color::Yellow)
-        .add_modifier(Modifier::BOLD)
-}
-
-fn current_style() -> Style {
-    Style::new()
-        .fg(Color::Black)
-        .bg(Color::LightRed)
         .add_modifier(Modifier::BOLD)
 }
 
@@ -78,8 +75,8 @@ fn row(gutter: &Span<'static>, chars: &[(char, Style)]) -> Line<'static> {
     Line::from(spans)
 }
 
-/// Lay out `msgs` in `width` columns. `current` is the index of the match to
-/// draw in the "current" colour.
+/// Lay out `msgs` in `width` columns. `current` is the index of the one match
+/// to highlight; the others are found but drawn as plain text.
 pub fn render(msgs: &[Msg], terms: &[String], width: usize, current: Option<usize>) -> Rendered {
     let avail = width.saturating_sub(GUTTER).max(1);
     let mut rows = Vec::new();
@@ -120,7 +117,7 @@ pub fn render(msgs: &[Msg], terms: &[String], width: usize, current: Option<usiz
                         if Some(idx) == current {
                             current_style()
                         } else {
-                            match_style()
+                            base
                         }
                     }
                     _ => base,
@@ -174,6 +171,15 @@ pub fn render(msgs: &[Msg], terms: &[String], width: usize, current: Option<usiz
         rows.push(Line::raw(""));
     }
     rows.pop();
+    if let Some(row) = current
+        .and_then(|c| matches.get(c))
+        .and_then(|&r| rows.get_mut(r))
+    {
+        row.spans[0] = Span::styled(
+            MARKER,
+            Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        );
+    }
     Rendered { rows, matches }
 }
 
@@ -324,19 +330,24 @@ mod tests {
         assert_eq!(r.matches, [0, 2]);
         let user = &r.rows[0].spans;
         assert_eq!(user[0].content, "▌ ");
-        assert_eq!(user[1].content, "a ");
         assert_eq!(user[1].style, Style::new().fg(Color::Yellow));
-        assert_eq!(user[2].content, "b");
-        assert_eq!(user[2].style, match_style(), "no current match");
+        assert_eq!(
+            user[1].content, "a b",
+            "no current match: nothing highlighted"
+        );
         let asst = &r.rows[2].spans;
         assert_eq!(asst[0].content, "│ ");
-        assert_eq!(asst[1].style, match_style());
-        assert_eq!(asst[2].content, " c");
-        assert_eq!(asst[2].style, Style::new());
+        assert_eq!(asst[1].content, "b c");
+        assert_eq!(asst[1].style, Style::new());
 
         let r = render(&[msg(true, "a b"), msg(false, "b c")], &t, 40, Some(0));
+        assert_eq!(r.rows[0].spans[0].content, MARKER);
         assert_eq!(r.rows[0].spans[2].style, current_style());
-        assert_eq!(r.rows[2].spans[1].style, match_style());
+        assert_eq!(
+            r.rows[2].spans[0].content, "│ ",
+            "only the current row is marked"
+        );
+        assert_eq!(r.rows[2].spans[1].content, "b c", "other matches are plain");
     }
 
     #[test]
@@ -364,6 +375,6 @@ mod tests {
         let t = terms(&["needle"]);
         let r = render(&[msg(false, "a NEEDLE b")], &t, 40, Some(0));
         let spans: Vec<&str> = r.rows[0].spans.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(spans, ["│ ", "a ", "NEEDLE", " b"]);
+        assert_eq!(spans, [MARKER, "a ", "NEEDLE", " b"]);
     }
 }
