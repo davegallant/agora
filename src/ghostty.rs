@@ -2,7 +2,9 @@
 
 use anyhow::{bail, Context, Result};
 use std::io::Write;
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::OnceLock;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Term {
@@ -11,8 +13,32 @@ pub struct Term {
     pub cwd: String,
 }
 
+/// Is Ghostty installed? Checked once: scripting a missing app fails on every
+/// poll, and `osascript` may ask the user where it is.
 pub fn available() -> bool {
-    cfg!(target_os = "macos")
+    static INSTALLED: OnceLock<bool> = OnceLock::new();
+    *INSTALLED.get_or_init(|| cfg!(target_os = "macos") && installed())
+}
+
+fn installed() -> bool {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let dirs = [
+        Some(PathBuf::from("/Applications")),
+        home.map(|h| h.join("Applications")),
+    ];
+    if dirs
+        .iter()
+        .flatten()
+        .any(|d| d.join("Ghostty.app").is_dir())
+    {
+        return true;
+    }
+    // Elsewhere, e.g. nix-darwin's "Nix Apps": ask Spotlight by bundle id.
+    Command::new("mdfind")
+        .arg("kMDItemCFBundleIdentifier == 'com.mitchellh.ghostty'")
+        .stderr(Stdio::null())
+        .output()
+        .is_ok_and(|o| o.status.success() && !o.stdout.trim_ascii().is_empty())
 }
 
 fn osascript(script: &str, args: &[&str]) -> Result<String> {
