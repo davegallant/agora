@@ -17,9 +17,17 @@ use std::process::Command;
 
 fn main() -> Result<()> {
     if let Some(arg) = std::env::args().nth(1) {
+        if arg == "-V" || arg == "--version" {
+            println!("agora {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
         if arg == "-h" || arg == "--help" {
             println!(
                 "agora: browse live and past Claude Code, Codex and pi sessions.\n\n\
+                 usage: agora                  open the browser\n\
+                 \x20      agora --list           live and recent sessions, tab-separated\n\
+                 \x20      agora --search <words> sessions whose conversation text matches\n\
+                 \x20      agora --version        print the version\n\n\
                  enter  jump to the session's Ghostty tab, or resume it here\n\
                  t      resume in a new Ghostty tab\n\
                  /      search    tab  cycle agent    l  live only\n\

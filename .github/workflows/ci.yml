@@ -29,5 +29,4 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-      - run: sh install.sh
-      - run: ~/.local/bin/agora --help
+      - run: bin=$(sh install.sh) && "$bin" --help

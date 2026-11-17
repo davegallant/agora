@@ -54,8 +54,16 @@ On macOS or Linux (arm64 or x86_64), from the latest release:
 curl -fsSL https://raw.githubusercontent.com/davegallant/agora/main/install.sh | sh
 ```
 
-It installs to `~/.local/bin`; set `AGORA_INSTALL_DIR` to change that, or
-`AGORA_VERSION` (e.g. `v0.2.0`) to pick a release.
+It installs to `~/.local/bin` without sudo. Pass options after `sh -s --`:
+`--dir DIR` to install elsewhere, `--version v0.2.0` to pick a release
+(`AGORA_INSTALL_DIR` and `AGORA_VERSION` work too).
+
+For agents and scripts: it never prompts, progress goes to stderr, and the
+only stdout line is the installed binary's absolute path, so
+`bin=$(curl -fsSL …/install.sh | sh)` then `"$bin" --version` installs and
+checks it. Exit status is 0 on success, 1 on failure (reason on stderr), 2 on
+bad options. Once installed, `agora --list` and `agora --search <words>` print
+sessions as tab-separated text.
 
 With Nix:
 
