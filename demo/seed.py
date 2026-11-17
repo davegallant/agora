@@ -140,6 +140,12 @@ def main():
         {"claude": claude, "codex": codex, "pi": pi}[agent](
             sid, f"{SRC}/{project}", title, msgs, ago)
     (HOME / "agents.json").write_text(json.dumps(LIVE))
+    rules = HOME / ".config/agora/channels"
+    rules.parent.mkdir(parents=True)
+    rules.write_text(
+        f"shop     = {SRC}/webshop, {SRC}/payments, {SRC}/api-gateway\n"
+        f"platform = {SRC}/infra, {SRC}/analytics\n"
+        f"personal = {SRC}/blog, {SRC}/dotfiles\n")
 
 
 main()

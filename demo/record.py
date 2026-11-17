@@ -28,6 +28,10 @@ SCRIPT = [
     (1.2, "\t"),       # codex only
     (1.2, "\t"),       # pi only
     (1.2, "\t"),       # back to all
+    (1.2, "c"),        # channel: shop
+    (1.2, "c"),        # channel: platform
+    (1.2, "c"),        # channel: personal
+    (1.0, "C"), (1.0, "C"), (1.0, "C"),  # back to all
     (1.2, "l"),        # live only
     (1.8, "l"),
     (1.2, "/"),
