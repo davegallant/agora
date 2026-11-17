@@ -5,7 +5,7 @@
 Work on `main`: commit approved changes straight to it and push. This personal
 repo uses no feature branches or PRs. A push to `main` runs the `ci` workflow,
 and changes under `src/` or `demo/` also run `demo`, which re-records the README
-GIF and opens a PR with it.
+GIF and commits it to `main`. Pull before your next push.
 
 ## Checking a change
 

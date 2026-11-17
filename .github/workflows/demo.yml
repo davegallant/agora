@@ -1,7 +1,9 @@
 name: demo
 
-# Re-record the README demo from made-up sessions (demo/seed.py) and open a PR
-# with the new demo/agora.cast and demo/agora.gif. Never touches real sessions.
+# Re-record the README demo from made-up sessions (demo/seed.py) when the code
+# changes, and commit the new demo/agora.cast and demo/agora.gif straight to
+# main. Never touches real sessions. Pushes made with GITHUB_TOKEN do not
+# trigger workflows, so this cannot loop.
 on:
   workflow_dispatch:
   push:
@@ -24,30 +26,25 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      pull-requests: write
     env:
       AGG_VERSION: v1.5.0
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0 # full history so the rebase onto a newer main works
       - name: Install agg
         run: |
           curl -fsSL -o /usr/local/bin/agg \
             "https://github.com/asciinema/agg/releases/download/$AGG_VERSION/agg-x86_64-unknown-linux-gnu"
           chmod +x /usr/local/bin/agg
       - run: sh demo/render.sh
-      - name: Open PR
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BRANCH: demo/update-recording
+      - name: Commit to main
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git switch -c "$BRANCH"
           git add demo/agora.cast demo/agora.gif
           git diff --cached --quiet && { echo "demo unchanged"; exit 0; }
-          git commit -m "docs: update demo recording"
-          git push --force origin "$BRANCH"
-          gh pr view "$BRANCH" >/dev/null 2>&1 || gh pr create \
-            --head "$BRANCH" --base main \
-            --title "docs: update demo recording" \
-            --body "Re-recorded from made-up sessions by the demo workflow ($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)."
+          git commit -m "docs(demo): update recording"
+          # main may have moved while recording; the demo files only change here.
+          git pull --rebase origin main
+          git push origin HEAD:main
