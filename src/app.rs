@@ -1,3 +1,4 @@
+use crate::channels::Channels;
 use crate::ghostty;
 use crate::live::{self, Live, Snapshot, State};
 use crate::preview::{self, Rendered};
@@ -53,6 +54,11 @@ pub struct App {
     home: PathBuf,
     pub sessions: Vec<Session>,
     haystacks: Vec<String>,
+    pub channels: Channels,
+    /// Each session's channel, parallel to `sessions`.
+    pub channel_of: Vec<String>,
+    /// Show only this channel's sessions.
+    pub channel_filter: Option<String>,
     pub live: HashMap<usize, Live>,
     last_snapshot: Snapshot,
     /// Indices into `sessions`, in display order.
@@ -97,19 +103,30 @@ fn files_of(sessions: &[Session]) -> Files {
     )
 }
 
-fn haystack(s: &Session) -> String {
-    format!("{} {} {} {}", s.agent.name(), s.project(), s.title, s.cwd).to_lowercase()
+fn haystack(s: &Session, channel: &str) -> String {
+    format!(
+        "{} {} {} {} {}",
+        s.agent.name(),
+        s.project(),
+        s.title,
+        s.cwd,
+        channel
+    )
+    .to_lowercase()
 }
 
 impl App {
     pub fn new(home: PathBuf, sessions: Vec<Session>) -> Self {
-        let haystacks = sessions.iter().map(haystack).collect();
+        let channels = Channels::load(&home);
         let files = files_of(&sessions);
         let watch = sessions::spawn_watcher(home.clone(), Duration::from_secs(2));
         let mut app = App {
             home,
             sessions,
-            haystacks,
+            haystacks: Vec::new(),
+            channels,
+            channel_of: Vec::new(),
+            channel_filter: None,
             live: HashMap::new(),
             last_snapshot: Snapshot::default(),
             view: Vec::new(),
@@ -145,8 +162,61 @@ impl App {
             search_progress: None,
             started: Instant::now(),
         };
+        app.index_sessions();
         app.rebuild_view();
         app
+    }
+
+    /// Recompute every session's channel and search text.
+    fn index_sessions(&mut self) {
+        self.channel_of = self
+            .sessions
+            .iter()
+            .map(|s| self.channels.of(&s.cwd))
+            .collect();
+        self.haystacks = self
+            .sessions
+            .iter()
+            .zip(&self.channel_of)
+            .map(|(s, c)| haystack(s, c))
+            .collect();
+    }
+
+    /// Use `channels` from now on.
+    #[cfg(test)]
+    pub fn set_channels(&mut self, channels: Channels) {
+        self.channels = channels;
+        self.index_sessions();
+        self.rebuild_view();
+    }
+
+    /// Channels to cycle through: configured ones that have sessions, in the
+    /// order written, then the rest by their most recent session.
+    pub fn channel_list(&self) -> Vec<String> {
+        let tagged = self
+            .channel_of
+            .iter()
+            .map(String::as_str)
+            .zip(self.sessions.iter().map(|s| s.mtime));
+        self.channels
+            .ordered(tagged)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect()
+    }
+
+    /// Step the channel filter: all, then each channel, then all again.
+    fn cycle_channel(&mut self, delta: isize) {
+        let list = self.channel_list();
+        let n = list.len() as isize + 1; // slot 0 is "all"
+        let at = self
+            .channel_filter
+            .as_ref()
+            .and_then(|c| list.iter().position(|x| x == c))
+            .map_or(0, |p| p as isize + 1);
+        let next = (at + delta).rem_euclid(n);
+        self.channel_filter = (next > 0).then(|| list[next as usize - 1].clone());
+        self.rebuild_view();
     }
 
     pub fn selected(&self) -> Option<usize> {
@@ -175,6 +245,10 @@ impl App {
             .filter(|&i| {
                 let s = &self.sessions[i];
                 self.agent_filter.is_none_or(|a| a == s.agent)
+                    && self
+                        .channel_filter
+                        .as_ref()
+                        .is_none_or(|c| *c == self.channel_of[i])
                     && (!self.live_only || self.live.contains_key(&i))
                     && (terms.iter().all(|t| self.haystacks[i].contains(t.as_str()))
                         || self.text_hits.contains_key(&i))
@@ -198,7 +272,7 @@ impl App {
     fn reload(&mut self) {
         let keep = self.selected().map(|i| self.sessions[i].path.clone());
         self.sessions = sessions::load_all(&self.home);
-        self.haystacks = self.sessions.iter().map(haystack).collect();
+        self.index_sessions();
         self.files = files_of(&self.sessions);
         self.previews.clear();
         self.pane.key = None;
@@ -230,16 +304,19 @@ impl App {
             return;
         }
         for s in c.updated {
-            let h = haystack(&s);
+            let ch = self.channels.of(&s.cwd);
+            let h = haystack(&s, &ch);
             let i = match index(&self.sessions, &s.path) {
                 Some(i) => {
                     self.sessions[i] = s;
                     self.haystacks[i] = h;
+                    self.channel_of[i] = ch;
                     i
                 }
                 None => {
                     self.sessions.push(s);
                     self.haystacks.push(h);
+                    self.channel_of.push(ch);
                     self.sessions.len() - 1
                 }
             };
@@ -427,6 +504,8 @@ impl App {
                 };
                 self.rebuild_view();
             }
+            KeyCode::Char('c') => self.cycle_channel(1),
+            KeyCode::Char('C') => self.cycle_channel(-1),
             KeyCode::Char('l') => {
                 self.live_only = !self.live_only;
                 self.rebuild_view();
@@ -729,6 +808,68 @@ mod tests {
         a.text_hits.insert(1, "…a zebra…".into());
         a.rebuild_view();
         assert_eq!(titles(&a), ["Bravo"]);
+    }
+
+    #[test]
+    fn c_cycles_channels_configured_first_then_by_recency() {
+        let mut a = app(vec![
+            with(Agent::Claude, "a", "Fold", "/home/d/scratch", 0),
+            with(Agent::Claude, "b", "Pipe", "/home/d/src/pipe-960", 10),
+            with(Agent::Codex, "c", "Corp", "/home/d/corp/api/sub", 20),
+            with(Agent::Claude, "d", "Old", "/home/d/old", 30),
+        ]);
+        a.set_channels(Channels::parse(
+            "unused = /nowhere\nwork = ~/corp/*, ~/src/pipe-*\n",
+            Path::new("/home/d"),
+        ));
+        assert_eq!(a.channel_list(), ["work", "scratch", "old"]);
+
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            press(&mut a, KeyCode::Char('c'));
+            seen.push((a.channel_filter.clone(), titles(&a).join(",")));
+        }
+        assert_eq!(
+            seen,
+            [
+                (Some("work".to_string()), "Pipe,Corp".to_string()),
+                (Some("scratch".into()), "Fold".into()),
+                (Some("old".into()), "Old".into()),
+                (None, "Fold,Pipe,Corp,Old".into()),
+            ]
+        );
+
+        // C goes backwards and wraps; it combines with the agent filter.
+        press(&mut a, KeyCode::Char('C'));
+        assert_eq!(a.channel_filter.as_deref(), Some("old"));
+        press(&mut a, KeyCode::Char('C'));
+        press(&mut a, KeyCode::Char('C'));
+        assert_eq!(a.channel_filter.as_deref(), Some("work"));
+        press(&mut a, KeyCode::Tab);
+        press(&mut a, KeyCode::Tab);
+        assert_eq!(titles(&a), ["Corp"]);
+    }
+
+    #[test]
+    fn channel_names_are_searchable_and_follow_merged_sessions() {
+        let mut a = app(vec![with(Agent::Claude, "a", "A", "/home/d/corp/x", 10)]);
+        a.set_channels(Channels::parse("work = ~/corp/*", Path::new("/home/d")));
+        press(&mut a, KeyCode::Char('/'));
+        typed(&mut a, "work");
+        assert_eq!(titles(&a), ["A"]);
+        press(&mut a, KeyCode::Esc);
+        assert!(a.filter.is_empty());
+
+        a.channel_filter = Some("work".into());
+        a.merge(Changes {
+            updated: vec![
+                with(Agent::Claude, "b", "B", "/home/d/corp/y", 0),
+                with(Agent::Claude, "c", "C", "/elsewhere", 0),
+            ],
+            removed: vec![],
+        });
+        assert_eq!(a.channel_of, ["work", "work", "elsewhere"]);
+        assert_eq!(titles(&a), ["B", "A"]);
     }
 
     #[test]

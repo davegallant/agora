@@ -58,13 +58,22 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 }
 
 fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
-    let scope = match (app.agent_filter, app.live_only) {
-        (None, false) => String::new(),
-        (a, live) => format!(
-            " [{}{}]",
-            a.map_or("all", |a| a.name()),
-            if live { ", live" } else { "" }
-        ),
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(c) = &app.channel_filter {
+        parts.push(format!("#{c}"));
+    }
+    match app.agent_filter {
+        Some(a) => parts.push(a.name().into()),
+        None if app.live_only && parts.is_empty() => parts.push("all".into()),
+        None => {}
+    }
+    if app.live_only {
+        parts.push("live".into());
+    }
+    let scope = if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" [{}]", parts.join(", "))
     };
     let title = format!(
         " agora · {} live · {}/{} sessions{} ",
@@ -284,7 +293,7 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
         Line::from(" type to filter · enter done · esc clear").fg(Color::DarkGray)
     } else {
         Line::from(
-            " enter open · t new tab · / search · n/N match · J/K scroll · tab agent · l live · r reload · q quit",
+            " enter open · t new tab · / search · n/N match · J/K scroll · c channel · tab agent · l live · r reload · q quit",
         )
         .fg(Color::DarkGray)
     };
@@ -447,6 +456,13 @@ mod tests {
         app.agent_filter = None;
         app.rebuild_view();
         assert_has(&screen(&mut app, 100, 20), &["[all, live]"]);
+        app.channel_filter = Some("a".into());
+        app.rebuild_view();
+        assert_has(&screen(&mut app, 100, 20), &["[#a, live]"]);
+        app.live_only = false;
+        app.rebuild_view();
+        assert_has(&screen(&mut app, 100, 20), &["[#a]"]);
+        app.channel_filter = None;
 
         app.live_only = false;
         app.filtering = true;

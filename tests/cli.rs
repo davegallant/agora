@@ -155,6 +155,20 @@ fn list_puts_live_sessions_first() {
 }
 
 #[test]
+fn channels_lists_configured_then_folder_channels_with_counts() {
+    let h = home("channels");
+    let out = stdout(&agora(&h, &["--channels"]));
+    assert_eq!(out, "docs\t1\napi\t1\nweb\t1\n", "no rules: one per folder");
+
+    write(
+        &h.dir.join(".config/agora/channels"),
+        "# rules\nnone = /nowhere\nback = /w/web, /w/api\n",
+    );
+    let out = stdout(&agora(&h, &["--channels"]));
+    assert_eq!(out, "back\t2\ndocs\t1\n");
+}
+
+#[test]
 fn list_of_an_empty_home_prints_nothing() {
     let h = home("empty");
     for d in [".claude", ".codex", ".pi"] {

@@ -47,6 +47,7 @@ Other terminals don't have these yet.
 | `enter` | attach / resume here (jump to tab in Ghostty) |
 | `t` | resume (or attach) in a new tab (Ghostty only) |
 | `/` | search titles and conversation text; `esc` clears |
+| `c` `C` | next / previous channel; back to all after the last |
 | `tab` | cycle agent: all, claude, codex, pi |
 | `l` | live sessions only |
 | `j` `k` `↑` `↓` `g` `G` | move |
@@ -55,6 +56,25 @@ Other terminals don't have these yet.
 
 `agora --list` prints live sessions and recent history as tab-separated text, and
 `agora --search <words>` prints sessions whose conversation text matches.
+
+## Channels
+
+A channel narrows the list to one area of your work, so sessions from other
+areas stay out of the way. Name your channels by folder in
+`~/.config/agora/channels`:
+
+```
+# name = folder, folder, ...
+work     = ~/src/github.com/my-company/*, ~/src/github.com/me/ticket-*
+personal = ~/src/github.com/me/blog, ~/dotfiles
+```
+
+A folder covers itself and everything under it, and `*` matches part of one
+folder name. The first matching line wins. A session that no line matches gets
+a channel named after its own folder. `c` steps through your channels in the
+order written, then through those folder channels, most recent first. Search
+matches channel names too. `agora --channels` prints every channel and its
+session count, tab-separated, in that same order.
 
 ## Where sessions come from
 

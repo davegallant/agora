@@ -1,6 +1,7 @@
 //! agora: one TUI for live and past Claude Code, Codex and pi sessions.
 
 mod app;
+mod channels;
 mod ghostty;
 mod live;
 mod preview;
@@ -27,10 +28,12 @@ fn main() -> Result<()> {
                  usage: agora                  open the browser\n\
                  \x20      agora --list           live and recent sessions, tab-separated\n\
                  \x20      agora --search <words> sessions whose conversation text matches\n\
+                 \x20      agora --channels       channels and their session counts\n\
                  \x20      agora --version        print the version\n\n\
                  enter  jump to the session's Ghostty tab, or resume it here\n\
                  t      resume in a new Ghostty tab\n\
                  /      search    tab  cycle agent    l  live only\n\
+                 c/C    next/previous channel (rules in ~/.config/agora/channels)\n\
                  J/K    scroll preview (ctrl-f/ctrl-b by page)\n\
                  n/N    next/previous match in the preview\n\
                  r      reload    q    quit"
@@ -54,6 +57,19 @@ fn main() -> Result<()> {
                 .get(&i)
                 .map_or("-".into(), |l| format!("{:?}", l.state));
             println!("{state}\t{}\t{}\t{}", s.agent.name(), s.project(), s.title);
+        }
+        return Ok(());
+    }
+
+    // Every channel with its session count, in the order `c` steps through them.
+    if std::env::args().nth(1).as_deref() == Some("--channels") {
+        let rules = channels::Channels::load(&home);
+        let tagged: Vec<(String, std::time::SystemTime)> = sessions
+            .iter()
+            .map(|s| (rules.of(&s.cwd), s.mtime))
+            .collect();
+        for (name, count) in rules.ordered(tagged.iter().map(|(c, t)| (c.as_str(), *t))) {
+            println!("{name}\t{count}");
         }
         return Ok(());
     }
