@@ -21,6 +21,13 @@ It works in any terminal, with no tmux. Live state comes from
 `claude agents --json`, which covers running Claude sessions, interactive and
 background.
 
+### The name
+
+In ancient Greek cities the *agora* (ἀγορά) was the open central square where
+people gathered to trade, talk and settle public business. agora is that
+square for your agents: one place where every session, live or past, shows up
+and you can step into any of them.
+
 ### Ghostty integration
 
 On macOS with Ghostty 1.3+, agora also reads Ghostty's tab titles through its
