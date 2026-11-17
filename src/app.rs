@@ -70,6 +70,8 @@ pub struct App {
     pub text_hits: HashMap<usize, String>,
     /// (files searched, total) while a text search runs.
     pub search_progress: Option<(usize, usize)>,
+    /// Drives the search spinner's animation.
+    started: Instant,
 }
 
 /// Text search starts after this pause in typing, and only for longer queries.
@@ -128,6 +130,7 @@ impl App {
             search_due: None,
             text_hits: HashMap::new(),
             search_progress: None,
+            started: Instant::now(),
         };
         app.rebuild_view();
         app
@@ -246,6 +249,17 @@ impl App {
         self.pane.follow = Follow::Match;
     }
 
+    /// A text search is pending or running.
+    pub fn searching(&self) -> bool {
+        self.search_due.is_some() || self.search_progress.is_some()
+    }
+
+    /// The spinner frame for this moment.
+    pub fn spinner(&self) -> &'static str {
+        const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+        FRAMES[(self.started.elapsed().as_millis() / 80) as usize % FRAMES.len()]
+    }
+
     pub fn live_count(&self) -> usize {
         self.live.len()
     }
@@ -261,7 +275,9 @@ impl App {
                 self.apply(s);
             }
             self.poll_search();
-            if event::poll(Duration::from_millis(200))? {
+            // Redraw faster while the spinner is animating.
+            let tick = if self.searching() { 80 } else { 200 };
+            if event::poll(Duration::from_millis(tick))? {
                 if let Event::Key(k) = event::read()? {
                     if k.kind == KeyEventKind::Press {
                         if let Some(exit) = self.on_key(k) {

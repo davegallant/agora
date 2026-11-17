@@ -78,26 +78,31 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
     let [search, table_area] =
         Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(inner);
     let search_line = if app.filtering || !app.filter.is_empty() {
-        Line::from(vec![
+        let dim = Style::new().fg(Color::DarkGray);
+        let mut spans = vec![
             Span::styled(" / ", Style::new().fg(Color::Yellow)),
             Span::raw(app.filter.clone()),
-            if app.filtering {
-                Span::raw("█")
-            } else {
-                Span::raw("")
-            },
-            match app.search_progress {
-                Some((done, total)) => Span::styled(
-                    format!("   searching conversations {done}/{total}"),
-                    Style::new().fg(Color::DarkGray),
-                ),
-                None if !app.text_hits.is_empty() => Span::styled(
-                    format!("   {} match in conversation text", app.text_hits.len()),
-                    Style::new().fg(Color::DarkGray),
-                ),
-                None => Span::raw(""),
-            },
-        ])
+            Span::raw(if app.filtering { "█" } else { "" }),
+        ];
+        if app.searching() {
+            spans.push(Span::styled(
+                format!("   {} ", app.spinner()),
+                Style::new().fg(Color::Yellow),
+            ));
+            spans.push(Span::styled(
+                match app.search_progress {
+                    Some((done, total)) => format!("searching conversations {done}/{total}"),
+                    None => "searching conversations…".into(),
+                },
+                dim,
+            ));
+        } else if !app.text_hits.is_empty() {
+            spans.push(Span::styled(
+                format!("   {} match in conversation text", app.text_hits.len()),
+                dim,
+            ));
+        }
+        Line::from(spans)
     } else {
         Line::from(Span::styled(
             " / to search",
