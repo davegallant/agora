@@ -52,7 +52,7 @@ Other terminals don't have these yet.
 | `tab` | cycle agent: all, claude, codex, pi |
 | `l` | live sessions only |
 | `s` | sort by recent, project or size; live sessions stay on top |
-| `p` | pin / unpin: pinned sessions sit just under the live ones, marked `★` |
+| `p` | pin / unpin: pinned sessions sit just under the live ones, `★` before the title |
 | `j` `k` `↑` `↓` `g` `G` | move |
 | `T` | choose a theme: `j`/`k` try one, `enter` keeps it, `esc` cancels |
 | `r` | reload every session from disk |

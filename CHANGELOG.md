@@ -12,8 +12,9 @@ All notable changes to agora. The format follows
 - `y` copies the selected session's resume command and `Y` its project path.
 - `s` sorts the list by recent, project or size; live sessions stay on top.
 - agora reopens with the channel, agent, live-only and sort you left it with.
-- `p` pins a session so it sits just under the live ones, marked `★`; pins
-  are kept in `~/.config/agora/pins`.
+- `p` pins a session so it sits just under the live ones, with `★` before
+  its title and "pinned" in the preview; pins are kept in
+  `~/.config/agora/pins`.
 - `◐` marks a Claude session that has finished its turn but still has shells
   running in the background, and the preview says how many.
 - Themes: `T` opens a picker that previews each theme as you move through it;
