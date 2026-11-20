@@ -17,6 +17,35 @@ All notable changes to agora. The format follows
   `$XDG_STATE_HOME/agora/`), out of the settings folder; existing files move
   there on first use. Settings follow `$XDG_CONFIG_HOME` when it is set.
 
+### Fixed
+
+- A session that moves folder partway through, like one Claude's agent view
+  moves into `.claude/worktrees/…`, shows git status, `d` and `Y` for the
+  folder it works in now. It still resumes from where it started.
+- The full view (`v`) stays on the session it opened, even when the list
+  changes underneath it.
+- A selection lost to a reload or an unfinished conversation search comes back
+  when its session does.
+- When a conversation search finishes, the preview stays on the most recent
+  match instead of jumping to the first.
+- New sessions, and sessions that move folder, get git status without `r`.
+- Conversation search finds text with quotes and backslashes, and phrases
+  split across a line break or extra spaces.
+- A session whose first prompt is over 128 KB is listed again, and a huge last
+  line no longer hides the latest title.
+- Titles can no longer carry terminal escape codes from pasted logs.
+- No crash on very small terminals while a search is on.
+- After a crash, the shell no longer fills with mouse escapes.
+- Tab titles starting with punctuation (`[WIP] …`) match their sessions, and a
+  running Claude session keeps its tab over a newer one with the same title.
+- A hung Ghostty or a first-use Automation prompt no longer freezes agora.
+- Wide-character project names keep their `±` mark.
+- `ctrl` chords are no longer typed into the search, and `g` on an empty list
+  does nothing.
+- An automatic reload no longer reports itself in the status line.
+- Watching thousands of transcripts costs far less, and a write that keeps the
+  same timestamp is still noticed.
+
 ## [0.5.0] - 2026-11-20
 
 ### Added

@@ -5,6 +5,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Term {
@@ -41,6 +42,20 @@ fn installed() -> bool {
         .is_ok_and(|o| o.status.success() && !o.stdout.trim_ascii().is_empty())
 }
 
+/// Wait for `child` and collect its output, killing it after `timeout`.
+fn wait_output(mut child: std::process::Child, timeout: Duration) -> Result<std::process::Output> {
+    let start = Instant::now();
+    while child.try_wait()?.is_none() {
+        if start.elapsed() > timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("gave up after {}s", timeout.as_secs());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    Ok(child.wait_with_output()?)
+}
+
 fn osascript(script: &str, args: &[&str]) -> Result<String> {
     let mut child = Command::new("osascript")
         .arg("-")
@@ -55,7 +70,8 @@ fn osascript(script: &str, args: &[&str]) -> Result<String> {
         .take()
         .context("osascript stdin")?
         .write_all(script.as_bytes())?;
-    let out = child.wait_with_output()?;
+    // A first-use Automation prompt or a hung Ghostty must not freeze agora.
+    let out = wait_output(child, Duration::from_secs(5))?;
     if !out.status.success() {
         bail!("{}", String::from_utf8_lossy(&out.stderr).trim());
     }
@@ -161,10 +177,12 @@ pub fn parse_title(raw: &str) -> (String, Glyph) {
         '◐', '◓', '◑', '◒', '⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏', '·', '✢', '✶', '✻',
         '✽',
     ];
+    // Claude marks idle tabs with ✳; emoji may carry a variation selector.
+    const MARKS: &[char] = &['🔔', '✳', '\u{fe0f}'];
     let mut glyph = Glyph::None;
     let mut rest = raw;
     while let Some(c) = rest.chars().next() {
-        if c.is_alphanumeric() || c == '~' || c == '/' {
+        if !(c.is_whitespace() || MARKS.contains(&c) || SPINNER.contains(&c)) {
             break;
         }
         if c == '🔔' {
@@ -230,6 +248,46 @@ mod tests {
         // Glyphs inside the title are part of it.
         assert_eq!(parse_title("a ◐ b"), ("a ◐ b".into(), Glyph::None));
         assert_eq!(parse_title("Été"), ("Été".into(), Glyph::None));
+    }
+
+    #[test]
+    fn titles_starting_with_punctuation_keep_it() {
+        for t in [
+            "[WIP] fix",
+            "(draft) plan",
+            "\"quoted\"",
+            "#123 bug",
+            "`cargo` fails",
+            "¿Qué?",
+        ] {
+            assert_eq!(parse_title(t).0, t);
+            assert_eq!(parse_title(&format!("✳ {t}")).0, t);
+            assert_eq!(
+                parse_title(&format!("🔔 {t}")),
+                (t.to_string(), Glyph::Bell)
+            );
+        }
+    }
+
+    #[test]
+    fn a_hung_script_is_given_up_on() {
+        let start = std::time::Instant::now();
+        let child = Command::new("sh")
+            .args(["-c", "sleep 5"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        assert!(wait_output(child, Duration::from_millis(200)).is_err());
+        assert!(start.elapsed() < Duration::from_secs(2));
+        let child = Command::new("sh")
+            .args(["-c", "echo hi"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let out = wait_output(child, Duration::from_secs(5)).unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "hi\n");
     }
 
     #[test]

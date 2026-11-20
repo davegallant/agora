@@ -51,7 +51,10 @@ pub fn save(home: &Path, v: &ViewState) -> std::io::Result<()> {
         out += &format!("agent = {}\n", a.name());
     }
     out += &format!("live = {}\nsort = {}\n", v.live_only, v.sort.name());
-    fs::write(p, out)
+    // Write then rename, so two agora windows never leave half a file.
+    let tmp = p.with_extension(format!("tmp{}", std::process::id()));
+    fs::write(&tmp, out)?;
+    fs::rename(tmp, p)
 }
 
 /// How the list is ordered under the live sessions.

@@ -65,13 +65,25 @@ fn age(t: SystemTime) -> String {
     }
 }
 
-/// `s` cut to `max` characters, ending in `…` when cut.
+/// `s` cut to `max` columns, ending in `…` when cut. Wide characters (CJK,
+/// say) take two columns each.
 fn shorten(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        s.chars().take(max - 1).chain(['…']).collect()
+    use unicode_width::UnicodeWidthChar;
+    if unicode_width::UnicodeWidthStr::width(s) <= max {
+        return s.to_string();
     }
+    let mut out = String::new();
+    let mut used = 0;
+    for c in s.chars() {
+        let w = c.width().unwrap_or(0);
+        if used + w > max - 1 {
+            break;
+        }
+        out.push(c);
+        used += w;
+    }
+    out.push('…');
+    out
 }
 
 /// "3m ago", or "just now".
@@ -306,7 +318,7 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
                     s.agent.name(),
                     Style::new().fg(agent_color(t, s.agent)),
                 )),
-                Cell::from(Line::from(match app.git.get(&s.cwd) {
+                Cell::from(Line::from(match app.git.get(&s.dir) {
                     // Shorten the name so the mark fits the 18-wide column.
                     Some(g) if g.dirty > 0 => vec![
                         Span::styled(shorten(s.project(), 16), Style::new().fg(t.subtle)),
@@ -354,7 +366,7 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
     let t = app.theme();
-    let Some(i) = app.selected() else {
+    let Some(i) = app.shown() else {
         let block = Block::default().borders(Borders::ALL).title(" preview ");
         let inner = block.inner(area);
         f.render_widget(block, area);
@@ -370,14 +382,14 @@ fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
         Line::from(s.title.clone()).bold(),
         Line::from(vec![
             Span::styled(s.agent.name(), Style::new().fg(agent_color(t, s.agent))),
-            Span::raw(format!(" · {} · {}", ago(s.mtime), s.cwd)).fg(t.subtle),
+            Span::raw(format!(" · {} · {}", ago(s.mtime), s.dir)).fg(t.subtle),
             Span::styled(
                 if app.is_pinned(i) { " · pinned" } else { "" },
                 Style::new().fg(t.accent),
             ),
         ]),
     ];
-    if let Some(g) = app.git.get(&s.cwd) {
+    if let Some(g) = app.git.get(&s.dir) {
         let mut spans = vec![Span::styled(
             format!("⎇ {}", g.branch),
             Style::new().fg(t.subtle),
@@ -485,7 +497,9 @@ fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
 
     let visible: Vec<Line> = pane.r.rows[top..(top + height).min(total)].to_vec();
     f.render_widget(Paragraph::new(Text::from(visible)), body_area);
-    if total > height {
+    // With no rows or columns to draw in there is no scrollbar (and the tick
+    // math below would divide by zero).
+    if total > height && height > 0 && body_area.width > 0 {
         let mut sb = ScrollbarState::new(max_top).position(top);
         f.render_stateful_widget(
             Scrollbar::new(ScrollbarOrientation::VerticalRight)
@@ -562,6 +576,7 @@ mod tests {
             id: "s1".into(),
             path,
             cwd: "/w/proj".into(),
+            dir: "/w/proj".into(),
             title: "Fix the login bug".into(),
             mtime: SystemTime::now(),
             size: 240 * 1024,
@@ -601,6 +616,7 @@ mod tests {
             id: id.into(),
             path,
             cwd: "/w/proj".into(),
+            dir: "/w/proj".into(),
             title: title.into(),
             mtime: SystemTime::now(),
             size: 0,
@@ -792,7 +808,10 @@ mod tests {
             PathBuf::from("/nonexistent"),
             vec![session("a", "Alpha", path)],
         );
-        app.reading = Some(crate::app::Reading::default());
+        app.reading = Some(crate::app::Reading {
+            path: app.sessions[0].path.clone(),
+            ..Default::default()
+        });
         let s = screen(&mut app, 80, 30);
         assert!(!s.contains("agora ·"), "the list is hidden:\n{s}");
         assert!(
@@ -828,6 +847,7 @@ mod tests {
     fn a_long_project_name_keeps_its_dirty_mark() {
         let mut long = session("a", "Alpha", PathBuf::from("/nonexistent/a"));
         long.cwd = "/w/uca-azure-terraform-workspace".into();
+        long.dir = long.cwd.clone();
         let mut app = App::new(PathBuf::from("/nonexistent"), vec![long]);
         app.git.insert(
             "/w/uca-azure-terraform-workspace".into(),
@@ -852,6 +872,45 @@ mod tests {
             &screen(&mut app, 100, 20),
             &["no live sessions · l shows all"],
         );
+    }
+
+    #[test]
+    fn no_terminal_size_panics_with_a_search_on() {
+        let path = long_transcript("tiny-search", 1);
+        let mut app = App::new(
+            PathBuf::from("/nonexistent"),
+            vec![session("a", "question", path)],
+        );
+        app.filter = "question".into();
+        app.rebuild_view();
+        for w in 1..60 {
+            for h in 1..10 {
+                screen(&mut app, w, h);
+                app.reading = Some(crate::app::Reading {
+                    path: app.sessions[0].path.clone(),
+                    query: "question".into(),
+                    ..Default::default()
+                });
+                screen(&mut app, w, h);
+                app.reading = None;
+            }
+        }
+    }
+
+    #[test]
+    fn a_wide_project_name_keeps_its_dirty_mark() {
+        let mut s = session("a", "Alpha", PathBuf::from("/nonexistent/a"));
+        s.cwd = "/w/日本語のプロジェクト名前とても長い".into();
+        s.dir = s.cwd.clone();
+        let mut app = App::new(PathBuf::from("/nonexistent"), vec![s]);
+        app.git.insert(
+            app.sessions[0].dir.clone(),
+            crate::git::Git {
+                dirty: 1,
+                ..Default::default()
+            },
+        );
+        assert_has(&screen(&mut app, 100, 20), &["… ±"]);
     }
 
     #[test]

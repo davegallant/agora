@@ -78,18 +78,30 @@ fn snippet(text: &str, at: usize, len: usize) -> String {
     format!("{lead}{body}{tail}")
 }
 
+/// How a word looks inside a JSON string: quotes, backslashes and control
+/// characters are escaped there, so the raw prefilter looks for that form.
+fn json_form(word: &str) -> Vec<u8> {
+    let quoted = serde_json::to_string(word).unwrap_or_default();
+    quoted.as_bytes()[1..quoted.len().saturating_sub(1).max(1)].to_vec()
+}
+
 /// Does this transcript's conversation text contain every term? Returns a
-/// snippet around the first term's first match.
+/// snippet around the first term's first match. Whitespace in the text is
+/// collapsed before matching, so a phrase matches across line breaks.
 pub fn search_file(path: &Path, agent: Agent, terms: &[String]) -> Option<String> {
     if terms.is_empty() {
         return None;
     }
     let raw = std::fs::read(path).ok()?;
     let lower = raw.to_ascii_lowercase();
-    if !terms
+    // Each word of each term, as it appears in the raw JSON. A phrase may be
+    // split by a line break in the file, so words are checked separately.
+    let words: Vec<Vec<Vec<u8>>> = terms
         .iter()
-        .all(|t| memmem::find(&lower, t.as_bytes()).is_some())
-    {
+        .map(|t| t.split(' ').map(json_form).collect())
+        .collect();
+    let has = |hay: &[u8], w: &Vec<u8>| memmem::find(hay, w).is_some();
+    if !words.iter().flatten().all(|w| has(&lower, w)) {
         return None;
     }
 
@@ -99,10 +111,7 @@ pub fn search_file(path: &Path, agent: Agent, terms: &[String]) -> Option<String
     for line in lower.split(|&b| b == b'\n') {
         let range = offset..offset + line.len();
         offset += line.len() + 1;
-        if !terms
-            .iter()
-            .any(|t| memmem::find(line, t.as_bytes()).is_some())
-        {
+        if !words.iter().any(|ws| ws.iter().all(|w| has(line, w))) {
             continue;
         }
         let Ok(v) = serde_json::from_slice(&raw[range]) else {
@@ -111,11 +120,12 @@ pub fn search_file(path: &Path, agent: Agent, terms: &[String]) -> Option<String
         let Some(msg) = message_of(agent, &v) else {
             continue;
         };
-        let text_lower = msg.text.to_ascii_lowercase();
+        let flat = msg.text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let flat_lower = flat.to_ascii_lowercase();
         for (n, t) in terms.iter().enumerate() {
-            if let Some(at) = text_lower.find(t.as_str()) {
+            if let Some(at) = flat_lower.find(t.as_str()) {
                 if found.insert(n) && first.is_none() {
-                    first = Some(snippet(&msg.text, at, t.len()));
+                    first = Some(snippet(&flat, at, t.len()));
                 }
             }
         }
@@ -257,6 +267,23 @@ mod tests {
         // Tool input is not conversation text.
         assert!(search_file(&p, Agent::Claude, &terms("secret-term")).is_none());
         assert!(search_file(&p, Agent::Claude, &terms("nowhere")).is_none());
+    }
+
+    #[test]
+    fn matches_text_that_json_escapes() {
+        let line = serde_json::json!({"type":"user","cwd":"/w","message":{"content":"please run \"make test\" in C:\\Users\\me"}});
+        let p = file("esc.jsonl", &format!("{line}\n"));
+        assert!(search_file(&p, Agent::Claude, &terms("\"make test\"")).is_some());
+        assert!(search_file(&p, Agent::Claude, &terms("c:\\users")).is_some());
+    }
+
+    #[test]
+    fn a_phrase_matches_across_line_breaks_and_extra_spaces() {
+        let line = serde_json::json!({"type":"user","cwd":"/w","message":{"content":"we should fix  the\nbug today"}});
+        let p = file("ws.jsonl", &format!("{line}\n"));
+        let snip = search_file(&p, Agent::Claude, &terms("fix the bug")).unwrap();
+        assert!(snip.contains("fix the bug"), "{snip}");
+        assert!(search_file(&p, Agent::Claude, &terms("the bug")).is_some());
     }
 
     #[test]

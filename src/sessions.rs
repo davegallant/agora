@@ -9,7 +9,7 @@
 //! read, so listing hundreds of multi-megabyte transcripts stays fast.
 
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -18,6 +18,8 @@ use std::time::{Duration, SystemTime};
 
 const HEAD_BYTES: u64 = 128 * 1024;
 const TAIL_BYTES: u64 = 64 * 1024;
+/// How far back to look when the last line alone is longer than `TAIL_BYTES`.
+const TAIL_MAX: u64 = 4 * 1024 * 1024;
 const PREVIEW_BYTES: u64 = 512 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -48,7 +50,11 @@ pub struct Session {
     pub agent: Agent,
     pub id: String,
     pub path: PathBuf,
+    /// Where the session started, and where it resumes from.
     pub cwd: String,
+    /// The folder it last worked in: `cwd`, unless it moved (for example into
+    /// a worktree) partway through.
+    pub dir: String,
     pub title: String,
     pub mtime: SystemTime,
     /// The transcript's size in bytes.
@@ -107,12 +113,46 @@ fn read_tail(path: &Path, n: u64) -> std::io::Result<String> {
     Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
+/// The folder the last turn in `text` worked in.
+fn last_dir(agent: Agent, text: &str) -> Option<String> {
+    json_lines(text)
+        .filter_map(|v| {
+            let cwd = match agent {
+                Agent::Claude => &v["cwd"],
+                Agent::Codex if v["type"] == "turn_context" => &v["payload"]["cwd"],
+                _ => return None,
+            };
+            cwd.as_str().filter(|c| !c.is_empty()).map(String::from)
+        })
+        .last()
+}
+
+/// The end of a file with at least one whole line, reading further back when
+/// the last line is longer than `TAIL_BYTES` (a big tool result, say).
+fn read_last_lines(path: &Path) -> std::io::Result<String> {
+    let mut n = TAIL_BYTES;
+    loop {
+        let tail = read_tail(path, n)?;
+        if !tail.trim().is_empty() || n >= TAIL_MAX {
+            return Ok(tail);
+        }
+        n *= 4;
+    }
+}
+
 fn json_lines(s: &str) -> impl Iterator<Item = Value> + '_ {
     s.lines().filter_map(|l| serde_json::from_str(l).ok())
 }
 
+/// One line of plain text: whitespace collapsed and control characters
+/// (terminal escapes from pasted logs, say) dropped, so a title can never
+/// steer the terminal it is drawn on.
 fn clean(s: &str) -> String {
-    s.split_whitespace().collect::<Vec<_>>().join(" ")
+    s.split_whitespace()
+        .map(|w| w.chars().filter(|c| !c.is_control()).collect::<String>())
+        .filter(|w| !w.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Injected context, slash commands and reminders make poor titles.
@@ -161,8 +201,8 @@ fn parse_claude(path: &Path, mtime: SystemTime) -> Option<Session> {
         }
         match v["type"].as_str() {
             Some("ai-title") => {
-                if let Some(t) = v["aiTitle"].as_str().filter(|t| !t.is_empty()) {
-                    title = Some(t.to_string());
+                if let Some(t) = v["aiTitle"].as_str().map(clean).filter(|t| !t.is_empty()) {
+                    title = Some(t);
                 }
             }
             Some("user") if prompt.is_none() && v["isMeta"].as_bool() != Some(true) => {
@@ -175,20 +215,26 @@ fn parse_claude(path: &Path, mtime: SystemTime) -> Option<Session> {
         }
     }
     // Claude rewrites its title as the conversation goes; the latest wins.
-    if let Ok(tail) = read_tail(path, TAIL_BYTES) {
+    let mut dir = last_dir(Agent::Claude, &head);
+    if let Ok(tail) = read_last_lines(path) {
+        dir = last_dir(Agent::Claude, &tail).or(dir);
         for v in json_lines(&tail) {
             if v["type"] == "ai-title" {
-                if let Some(t) = v["aiTitle"].as_str().filter(|t| !t.is_empty()) {
-                    title = Some(t.to_string());
+                if let Some(t) = v["aiTitle"].as_str().map(clean).filter(|t| !t.is_empty()) {
+                    title = Some(t);
                 }
             }
         }
     }
+    // A first prompt longer than the head is cut and unreadable; the folder
+    // it would have given is still on every later line.
+    let cwd = cwd.or_else(|| dir.clone())?;
     Some(Session {
         agent: Agent::Claude,
         id: path.file_stem()?.to_str()?.to_string(),
         path: path.to_path_buf(),
-        cwd: cwd?,
+        dir: dir.unwrap_or_else(|| cwd.clone()),
+        cwd,
         title: title.or(prompt).unwrap_or_else(|| "(no prompt)".into()),
         mtime,
         size: 0,
@@ -228,6 +274,11 @@ fn parse_codex(
         }
     }
     let id = id?;
+    let cwd = cwd?;
+    let dir = read_last_lines(path)
+        .ok()
+        .and_then(|t| last_dir(Agent::Codex, &t))
+        .unwrap_or_else(|| cwd.clone());
     let title = titles
         .get(&id)
         .cloned()
@@ -237,7 +288,8 @@ fn parse_codex(
         agent: Agent::Codex,
         id,
         path: path.to_path_buf(),
-        cwd: cwd?,
+        cwd,
+        dir,
         title,
         mtime,
         size: 0,
@@ -262,11 +314,13 @@ fn parse_pi(path: &Path, mtime: SystemTime) -> Option<Session> {
             _ => {}
         }
     }
+    let cwd: String = cwd?;
     Some(Session {
         agent: Agent::Pi,
         id: id?,
         path: path.to_path_buf(),
-        cwd: cwd?,
+        dir: cwd.clone(),
+        cwd,
         title: prompt.unwrap_or_else(|| "(no prompt)".into()),
         mtime,
         size: 0,
@@ -278,8 +332,9 @@ fn codex_titles(home: &Path) -> HashMap<String, String> {
     if let Ok(s) = fs::read_to_string(home.join(".codex/session_index.jsonl")) {
         for v in json_lines(&s) {
             if let (Some(id), Some(name)) = (v["id"].as_str(), v["thread_name"].as_str()) {
+                let name = clean(name);
                 if !name.is_empty() {
-                    titles.insert(id.to_string(), name.to_string());
+                    titles.insert(id.to_string(), name);
                 }
             }
         }
@@ -288,7 +343,7 @@ fn codex_titles(home: &Path) -> HashMap<String, String> {
 }
 
 /// `*.jsonl` files exactly `depth` directories below `dir`.
-fn jsonl_files(dir: &Path, depth: usize, out: &mut Vec<(PathBuf, SystemTime)>) {
+fn jsonl_files(dir: &Path, depth: usize, out: &mut Vec<(PathBuf, Stamp)>) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
@@ -300,13 +355,18 @@ fn jsonl_files(dir: &Path, depth: usize, out: &mut Vec<(PathBuf, SystemTime)>) {
                 jsonl_files(&path, depth - 1, out);
             }
         } else if meta.is_file() && path.extension().is_some_and(|x| x == "jsonl") {
-            out.push((path, meta.modified().unwrap_or(SystemTime::UNIX_EPOCH)));
+            let mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+            out.push((path, (mtime, meta.len())));
         }
     }
 }
 
+/// When a file last changed, and its size: a write within one tick of a
+/// coarse filesystem clock still changes the size.
+type Stamp = (SystemTime, u64);
+
 /// A transcript file: whose it is, where, and when it last changed.
-type Transcript = (Agent, PathBuf, SystemTime);
+type Transcript = (Agent, PathBuf, Stamp);
 
 /// Every transcript file on disk. Only directories are read, not the files.
 fn scan(home: &Path) -> Vec<Transcript> {
@@ -323,7 +383,10 @@ fn scan(home: &Path) -> Vec<Transcript> {
     out
 }
 
-fn parse((agent, path, mtime): &Transcript, titles: &HashMap<String, String>) -> Option<Session> {
+fn parse(
+    (agent, path, (mtime, _)): &Transcript,
+    titles: &HashMap<String, String>,
+) -> Option<Session> {
     let mut s = match agent {
         Agent::Claude => parse_claude(path, *mtime),
         Agent::Codex => parse_codex(path, *mtime, titles),
@@ -375,7 +438,7 @@ pub struct Changes {
 pub fn spawn_watcher(home: PathBuf, every: Duration) -> Receiver<Changes> {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let mut known: HashMap<PathBuf, SystemTime> =
+        let mut known: HashMap<PathBuf, Stamp> =
             scan(&home).into_iter().map(|(_, p, m)| (p, m)).collect();
         loop {
             std::thread::sleep(every);
@@ -384,9 +447,10 @@ pub fn spawn_watcher(home: PathBuf, every: Duration) -> Receiver<Changes> {
                 .iter()
                 .filter(|(_, p, m)| known.get(p) != Some(m))
                 .collect();
+            let present: HashSet<&PathBuf> = now.iter().map(|(_, p, _)| p).collect();
             let mut removed: Vec<PathBuf> = known
                 .keys()
-                .filter(|p| !now.iter().any(|(_, q, _)| q == *p))
+                .filter(|p| !present.contains(p))
                 .cloned()
                 .collect();
             if changed.is_empty() && removed.is_empty() {
@@ -635,6 +699,7 @@ mod tests {
             id: id.into(),
             path: path.into(),
             cwd: cwd.into(),
+            dir: cwd.into(),
             title: String::new(),
             mtime: SystemTime::UNIX_EPOCH,
             size: 0,
@@ -935,6 +1000,68 @@ mod tests {
     }
 
     #[test]
+    fn a_session_that_moves_folder_keeps_where_it_started() {
+        let home = tmpdir("moved");
+        let claude = home.join(".claude/projects/-w-a/c1.jsonl");
+        write(
+            &claude,
+            &[
+                r#"{"type":"user","cwd":"/w/a","message":{"content":"start here"}}"#,
+                r#"{"type":"assistant","cwd":"/w/a/.claude/worktrees/x","message":{"content":"moved"}}"#,
+            ],
+        );
+        let s = parse_claude(&claude, SystemTime::UNIX_EPOCH).unwrap();
+        assert_eq!(s.cwd, "/w/a", "resume where it was filed");
+        assert_eq!(s.dir, "/w/a/.claude/worktrees/x", "working there now");
+
+        let codex = home.join(".codex/sessions/2026/01/02/rollout-1.jsonl");
+        write(
+            &codex,
+            &[
+                r#"{"type":"session_meta","payload":{"id":"x1","cwd":"/w/b"}}"#,
+                r#"{"type":"turn_context","payload":{"cwd":"/w/b"}}"#,
+                r#"{"type":"turn_context","payload":{"cwd":"/w/b2"}}"#,
+            ],
+        );
+        let s = parse_codex(&codex, SystemTime::UNIX_EPOCH, &HashMap::new()).unwrap();
+        assert_eq!((s.cwd.as_str(), s.dir.as_str()), ("/w/b", "/w/b2"));
+
+        let pi = home.join(".pi/agent/sessions/-w-c/1_p1.jsonl");
+        write(&pi, &[r#"{"type":"session","id":"p1","cwd":"/w/c"}"#]);
+        let s = parse_pi(&pi, SystemTime::UNIX_EPOCH).unwrap();
+        assert_eq!(s.dir, s.cwd, "without a move, the same folder");
+        fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn titles_lose_control_characters() {
+        let home = tmpdir("ctrl-title");
+        let path = home.join(".claude/projects/-w/esc.jsonl");
+        write(
+            &path,
+            &[
+                r#"{"type":"user","cwd":"/w","message":{"content":"x"}}"#,
+                r#"{"type":"ai-title","aiTitle":"\u001b]0;pwned\u0007Red\u001b[31m title"}"#,
+            ],
+        );
+        let s = parse_claude(&path, SystemTime::UNIX_EPOCH).unwrap();
+        assert!(!s.title.chars().any(char::is_control), "{:?}", s.title);
+        let prompt = home.join(".claude/projects/-w/esc2.jsonl");
+        write(
+            &prompt,
+            &[r#"{"type":"user","cwd":"/w","message":{"content":"log: \u001b[2Jcleared"}}"#],
+        );
+        let s = parse_claude(&prompt, SystemTime::UNIX_EPOCH).unwrap();
+        assert!(!s.title.chars().any(char::is_control), "{:?}", s.title);
+        write(
+            &home.join(".codex/session_index.jsonl"),
+            &[r#"{"id":"x","thread_name":"a\u001b[1mb"}"#],
+        );
+        assert_eq!(codex_titles(&home)["x"], "a[1mb");
+        fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
     fn load_all_of_an_empty_home() {
         assert!(load_all(&tmpdir("empty")).is_empty());
         assert!(load_all(Path::new("/nonexistent/agora")).is_empty());
@@ -1089,6 +1216,85 @@ mod tests {
         let c = wait();
         assert!(c.updated.is_empty());
         assert_eq!(c.removed, vec![path.clone()]);
+        fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn watcher_sees_a_write_that_keeps_the_same_mtime() {
+        let home = tmpdir("watch-samemtime");
+        let path = home.join(".claude/projects/-w/s.jsonl");
+        let first = r#"{"type":"user","cwd":"/w","message":{"content":"before"}}"#;
+        put(&path, &[first], Some(1000));
+        let rx = spawn_watcher(home.clone(), Duration::from_millis(20));
+        std::thread::sleep(Duration::from_millis(100));
+        put(
+            &path,
+            &[first, r#"{"type":"ai-title","aiTitle":"Same tick"}"#],
+            Some(1000),
+        );
+        let c = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(c.updated[0].title, "Same tick");
+        fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn a_huge_first_prompt_still_lists_the_session() {
+        let home = tmpdir("bigfirst");
+        let path = home.join(".claude/projects/-w/big.jsonl");
+        let big = "x".repeat(200 * 1024);
+        let prompt = format!(r#"{{"type":"user","cwd":"/w","message":{{"content":"{big}"}}}}"#);
+        write(
+            &path,
+            &[
+                r#"{"type":"permission-mode","mode":"default"}"#,
+                &prompt,
+                r#"{"type":"assistant","cwd":"/w","message":{"content":"ok"}}"#,
+            ],
+        );
+        let s = parse_claude(&path, SystemTime::UNIX_EPOCH).expect("listed");
+        assert_eq!(s.cwd, "/w");
+        fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn a_huge_last_line_keeps_the_latest_title_and_folder() {
+        let home = tmpdir("biglast");
+        let path = home.join(".claude/projects/-w/biglast.jsonl");
+        let big = "y".repeat(100 * 1024);
+        let pad = format!(
+            r#"{{"type":"progress","data":"{}"}}"#,
+            "p".repeat(200 * 1024)
+        );
+        let last = format!(r#"{{"type":"user","cwd":"/w/moved","message":{{"content":"{big}"}}}}"#);
+        write(
+            &path,
+            &[
+                r#"{"type":"user","cwd":"/w","message":{"content":"start"}}"#,
+                r#"{"type":"ai-title","aiTitle":"Early"}"#,
+                &pad,
+                r#"{"type":"ai-title","aiTitle":"Late"}"#,
+                &last,
+            ],
+        );
+        let s = parse_claude(&path, SystemTime::UNIX_EPOCH).unwrap();
+        assert_eq!(s.title, "Late");
+        assert_eq!(s.dir, "/w/moved");
+
+        let codex = home.join(".codex/sessions/2026/01/02/rollout-big.jsonl");
+        let tc_big = format!(
+            r#"{{"type":"response_item","payload":{{"type":"message","role":"assistant","content":[{{"type":"output_text","text":"{big}"}}]}}}}"#
+        );
+        write(
+            &codex,
+            &[
+                r#"{"type":"session_meta","payload":{"id":"x1","cwd":"/w/b"}}"#,
+                &pad,
+                r#"{"type":"turn_context","payload":{"cwd":"/w/b2"}}"#,
+                &tc_big,
+            ],
+        );
+        let s = parse_codex(&codex, SystemTime::UNIX_EPOCH, &HashMap::new()).unwrap();
+        assert_eq!(s.dir, "/w/b2");
         fs::remove_dir_all(&home).unwrap();
     }
 

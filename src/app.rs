@@ -44,6 +44,8 @@ pub enum Follow {
 /// The full-screen transcript view, with its own search.
 #[derive(Debug, Default)]
 pub struct Reading {
+    /// The transcript being read; it stays put while the list changes.
+    pub path: PathBuf,
     pub query: String,
     /// Typing into `query`.
     pub typing: bool,
@@ -115,6 +117,9 @@ pub struct App {
     pub showing_keys: bool,
     /// The selected session is open full-screen.
     pub reading: Option<Reading>,
+    /// A selected session that a rebuild dropped from the view (a reload,
+    /// say): selected again when it comes back, until the user moves.
+    lost: Option<PathBuf>,
 }
 
 /// Text search starts after this pause in typing, and only for longer queries.
@@ -133,11 +138,12 @@ fn files_of(sessions: &[Session]) -> Files {
 
 fn haystack(s: &Session, channel: &str) -> String {
     format!(
-        "{} {} {} {} {}",
+        "{} {} {} {} {} {}",
         s.agent.name(),
         s.project(),
         s.title,
         s.cwd,
+        s.dir,
         channel
     )
     .to_lowercase()
@@ -216,6 +222,7 @@ impl App {
             picking_theme: None,
             showing_keys: false,
             reading: None,
+            lost: None,
         };
         app.index_sessions();
         app.pins = Pins::load(&app.home);
@@ -256,15 +263,15 @@ impl App {
         self.saved_view = v;
     }
 
-    /// Recompute every session's channel and search text.
-    fn index_sessions(&mut self) {
+    /// Point the git poller at the most recently used folders.
+    fn want_git(&self) {
         // Git context for the most recently used folders.
         let mut recent: Vec<&Session> = self.sessions.iter().collect();
         recent.sort_by_key(|s| Reverse(s.mtime));
         let mut dirs: Vec<String> = Vec::new();
         for s in recent {
-            if !dirs.contains(&s.cwd) {
-                dirs.push(s.cwd.clone());
+            if !dirs.contains(&s.dir) {
+                dirs.push(s.dir.clone());
             }
             if dirs.len() == 100 {
                 break;
@@ -273,6 +280,11 @@ impl App {
         if let Ok(mut w) = self.git_wanted.lock() {
             *w = dirs;
         }
+    }
+
+    /// Recompute every session's channel and search text.
+    fn index_sessions(&mut self) {
+        self.want_git();
         self.channel_of = self
             .sessions
             .iter()
@@ -321,6 +333,15 @@ impl App {
         let next = (at + delta).rem_euclid(n);
         self.channel_filter = (next > 0).then(|| list[next as usize - 1].clone());
         self.rebuild_view();
+    }
+
+    /// The session the preview shows: the one open in the full view, else
+    /// the list's selection.
+    pub fn shown(&self) -> Option<usize> {
+        match &self.reading {
+            Some(r) => self.sessions.iter().position(|s| s.path == r.path),
+            None => self.selected(),
+        }
     }
 
     pub fn selected(&self) -> Option<usize> {
@@ -391,11 +412,21 @@ impl App {
             (self.rank(i), project, Reverse(size), Reverse(s.mtime))
         });
         self.view = view;
-        let pos = keep
-            .and_then(|k| self.view.iter().position(|&i| i == k))
-            .unwrap_or(0);
+        let found = |p: &PathBuf| self.view.iter().position(|&i| self.sessions[i].path == *p);
+        let pos = match self.lost.as_ref().and_then(found) {
+            Some(pos) => {
+                self.lost = None;
+                Some(pos)
+            }
+            None => keep.and_then(|k| self.view.iter().position(|&i| i == k)),
+        };
+        // The session on screen was dropped: remember it, so it is selected
+        // again if it comes back (a reload, a search that has not finished).
+        if let (None, Some(s)) = (pos, keep.and_then(|k| self.sessions.get(k))) {
+            self.lost = Some(s.path.clone());
+        }
         self.table
-            .select((!self.view.is_empty()).then(|| pos.min(self.view.len() - 1)));
+            .select((!self.view.is_empty()).then(|| pos.unwrap_or(0).min(self.view.len() - 1)));
     }
 
     fn apply(&mut self, snap: Snapshot) {
@@ -404,9 +435,12 @@ impl App {
         self.rebuild_view();
     }
 
-    fn reload(&mut self) {
+    fn reload(&mut self, announce: bool) {
         let keep = self.selected().map(|i| self.sessions[i].path.clone());
         self.sessions = sessions::load_all(&self.home);
+        // The old view's indices mean nothing now.
+        self.view.clear();
+        self.table.select(None);
         self.index_sessions();
         self.files = files_of(&self.sessions);
         self.previews.clear();
@@ -414,14 +448,19 @@ impl App {
         self.pane.session = None;
         self.filter_changed();
         self.live = live::resolve(&self.sessions, &self.last_snapshot);
+        self.lost = keep.or(self.lost.take());
         self.table.select(None);
         self.rebuild_view();
-        if let Some(p) = keep {
-            if let Some(pos) = self.view.iter().position(|&i| self.sessions[i].path == p) {
-                self.table.select(Some(pos));
-            }
+        if self
+            .reading
+            .as_ref()
+            .is_some_and(|r| !self.sessions.iter().any(|s| s.path == r.path))
+        {
+            self.reading = None;
         }
-        self.status = Some(format!("reloaded {} sessions", self.sessions.len()));
+        if announce {
+            self.status = Some(format!("reloaded {} sessions", self.sessions.len()));
+        }
     }
 
     /// Fold in transcripts that changed on disk. Sessions keep their index, so
@@ -432,7 +471,7 @@ impl App {
         let index = |sessions: &[Session], p: &Path| sessions.iter().position(|s| s.path == p);
         // Removing one would shift every index after it: start over instead.
         if c.removed.iter().any(|p| index(&self.sessions, p).is_some()) {
-            self.reload();
+            self.reload(false);
             return;
         }
         if c.updated.is_empty() {
@@ -462,6 +501,7 @@ impl App {
             }
         }
         self.files = files_of(&self.sessions);
+        self.want_git();
         self.live = live::resolve(&self.sessions, &self.last_snapshot);
         self.rebuild_view();
     }
@@ -477,6 +517,17 @@ impl App {
             self.pane.follow = Follow::Bottom;
         }
         let full = self.reading.is_some() || self.text_hits.contains_key(&i);
+        // Loading the whole transcript renumbers the matches: start again on
+        // the most recent one.
+        if self
+            .pane
+            .key
+            .as_ref()
+            .is_some_and(|k| k.0 == i && k.4 != full)
+        {
+            self.pane.current = None;
+            self.pane.follow = Follow::Bottom;
+        }
         let t = self.theme;
         let key = (i, width, query.clone(), self.pane.current, full, t);
         if self.pane.key.as_ref() != Some(&key) {
@@ -504,8 +555,9 @@ impl App {
     }
 
     fn open_reading(&mut self) {
-        if self.selected().is_some() {
+        if let Some(i) = self.selected() {
             self.reading = Some(Reading {
+                path: self.sessions[i].path.clone(),
                 query: self.filter.clone(),
                 typing: false,
             });
@@ -513,8 +565,12 @@ impl App {
         }
     }
 
+    /// Back to the list, on the session that was open if it is still listed.
     fn close_reading(&mut self) {
-        self.reading = None;
+        if let Some(r) = self.reading.take() {
+            self.lost = Some(r.path);
+            self.rebuild_view();
+        }
         self.pane.session = None;
     }
 
@@ -534,7 +590,7 @@ impl App {
                     r.query.pop();
                 }
                 KeyCode::Char('u') if ctrl => r.query.clear(),
-                KeyCode::Char(c) => r.query.push(c),
+                KeyCode::Char(c) if !ctrl => r.query.push(c),
                 _ => {}
             }
             return;
@@ -676,6 +732,7 @@ impl App {
         let cur = self.table.selected().unwrap_or(0) as isize;
         let next = (cur + delta).clamp(0, self.view.len() as isize - 1);
         self.table.select(Some(next as usize));
+        self.lost = None;
     }
 
     fn on_key(&mut self, k: KeyEvent) -> Option<Exit> {
@@ -716,7 +773,7 @@ impl App {
                     self.filter.pop();
                 }
                 KeyCode::Char('u') if ctrl => self.filter.clear(),
-                KeyCode::Char(c) => self.filter.push(c),
+                KeyCode::Char(c) if !ctrl => self.filter.push(c),
                 _ => return None,
             }
             self.filter_changed();
@@ -734,9 +791,13 @@ impl App {
             KeyCode::Char('k') => return self.nav(-1),
             KeyCode::Char('d') if ctrl => return self.nav(15),
             KeyCode::Char('u') if ctrl => return self.nav(-15),
-            KeyCode::Char('g') | KeyCode::Home => self.table.select(Some(0)),
+            KeyCode::Char('g') | KeyCode::Home => {
+                self.table.select((!self.view.is_empty()).then_some(0));
+                self.lost = None;
+            }
             KeyCode::Char('G') | KeyCode::End => {
                 self.table.select(self.view.len().checked_sub(1));
+                self.lost = None;
             }
             KeyCode::Char('/') => self.filtering = true,
             KeyCode::Tab => {
@@ -754,15 +815,19 @@ impl App {
                 self.live_only = !self.live_only;
                 self.rebuild_view();
             }
-            KeyCode::Char('r') => self.reload(),
+            KeyCode::Char('r') => self.reload(true),
             KeyCode::Char('s') => {
                 self.sort = self.sort.next();
                 self.rebuild_view();
             }
             KeyCode::Char('J') => self.scroll_preview(3),
             KeyCode::Char('K') => self.scroll_preview(-3),
-            KeyCode::Char('f') if ctrl => self.scroll_preview(self.pane.height as isize - 2),
-            KeyCode::Char('b') if ctrl => self.scroll_preview(-(self.pane.height as isize - 2)),
+            KeyCode::Char('f') if ctrl => {
+                self.scroll_preview((self.pane.height as isize - 2).max(1))
+            }
+            KeyCode::Char('b') if ctrl => {
+                self.scroll_preview(-(self.pane.height as isize - 2).max(1))
+            }
             KeyCode::Char('n') => self.jump_match(1),
             KeyCode::Char('N') => self.jump_match(-1),
             KeyCode::Enter => return self.open(),
@@ -856,7 +921,7 @@ impl App {
         let Some(i) = self.selected() else { return };
         let s = &self.sessions[i];
         let text = if path {
-            s.cwd.clone()
+            s.dir.clone()
         } else if let Some(id) = self.live.get(&i).and_then(|l| l.background.clone()) {
             format!("claude attach {}", ghostty::shell_quote(&id))
         } else {
@@ -875,7 +940,7 @@ impl App {
 
     /// Review the selected session's folder: `hunk diff --watch`, else `git diff`.
     fn diff(&mut self) -> Option<Exit> {
-        let cwd = self.sessions[self.selected()?].cwd.clone();
+        let cwd = self.sessions[self.selected()?].dir.clone();
         if !Path::new(&cwd).is_dir() {
             self.status = Some(format!("{cwd} no longer exists"));
             return None;
@@ -921,6 +986,7 @@ mod tests {
             id: id.into(),
             path: PathBuf::from(format!("/nonexistent/{id}.jsonl")),
             cwd: "/w/proj".into(),
+            dir: "/w/proj".into(),
             title: title.into(),
             mtime: SystemTime::now() - Duration::from_secs(age_secs),
             size: 0,
@@ -980,6 +1046,7 @@ mod tests {
         Session {
             agent,
             cwd: cwd.into(),
+            dir: cwd.into(),
             ..session(id, title, age_secs)
         }
     }
@@ -1477,7 +1544,7 @@ mod tests {
             removed: vec![gone],
         });
         assert!(a.sessions.is_empty());
-        assert_eq!(a.status.as_deref(), Some("reloaded 0 sessions"));
+        assert_eq!(a.status, None, "an automatic reload is quiet");
         assert_eq!(a.table.selected(), None);
     }
 
@@ -1909,6 +1976,121 @@ mod tests {
         assert!(press(&mut gone, KeyCode::Char('d')).is_none());
         assert!(gone.status.as_deref().unwrap().contains("no longer exists"));
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn d_and_shift_y_use_the_folder_the_session_works_in_now() {
+        let start = tmpdir("moved-start");
+        let now = tmpdir("moved-now");
+        let mut s = with(Agent::Claude, "a", "A", start.to_str().unwrap(), 0);
+        s.dir = now.to_str().unwrap().into();
+        let mut a = app(vec![s]);
+        match press(&mut a, KeyCode::Char('d')) {
+            Some(Exit::Exec { cwd, .. }) => assert_eq!(cwd.as_deref(), now.to_str()),
+            _ => panic!("d runs a diff"),
+        }
+        press(&mut a, KeyCode::Char('Y'));
+        assert_eq!(crate::clipboard::last().as_deref(), now.to_str());
+        press(&mut a, KeyCode::Char('y'));
+        let y = crate::clipboard::last().unwrap();
+        assert!(
+            y.starts_with(&format!("cd {}", start.display())),
+            "resume where it was filed: {y}"
+        );
+        fs::remove_dir_all(&start).unwrap();
+        fs::remove_dir_all(&now).unwrap();
+    }
+
+    #[test]
+    fn the_full_view_stays_on_its_session_when_the_list_changes() {
+        let mut a = five();
+        for i in 0..5 {
+            a.live.insert(i, live(State::Open));
+        }
+        a.rebuild_view();
+        press(&mut a, KeyCode::Char('j'));
+        let reading = a.selected().unwrap();
+        press(&mut a, KeyCode::Char('v'));
+        a.live.remove(&reading);
+        a.live_only = true;
+        a.rebuild_view();
+        assert_ne!(a.selected(), Some(reading), "the list moved on");
+        assert_eq!(a.shown(), Some(reading), "the full view did not");
+    }
+
+    #[test]
+    fn a_selection_lost_to_a_rebuild_comes_back_with_its_session() {
+        let mut a = app(vec![session("a", "Alpha", 0), session("b", "Bravo", 10)]);
+        a.filter = "zzz".into();
+        a.text_hits.insert(1, "zzz".into());
+        a.rebuild_view();
+        assert_eq!(a.selected(), Some(1));
+        // A reload clears the text hits until the search runs again.
+        a.text_hits.clear();
+        a.rebuild_view();
+        a.text_hits.insert(0, "zzz".into());
+        a.text_hits.insert(1, "zzz".into());
+        a.rebuild_view();
+        assert_eq!(a.selected(), Some(1), "back on Bravo, not row 0");
+        // Moving on purpose forgets it.
+        press(&mut a, KeyCode::Char('g'));
+        a.rebuild_view();
+        assert_eq!(a.table.selected(), Some(0));
+    }
+
+    #[test]
+    fn a_late_text_hit_keeps_the_most_recent_match() {
+        let dir = tmpdir("late-hit");
+        let mut lines: Vec<String> = vec!["needle early".into()];
+        lines.extend((0..300).map(|n| format!("filler {n}")));
+        lines.push("needle late".into());
+        let lines: Vec<(bool, &str)> = lines.iter().map(|t| (true, t.as_str())).collect();
+        let mut a = app(vec![on_disk(&dir, "s", "needle session", &lines)]);
+        a.filter = "needle".into();
+        a.rebuild_view();
+        a.preview_pane(0, 80);
+        a.text_hits.insert(0, "needle".into());
+        let pane = a.preview_pane(0, 80);
+        assert_eq!(pane.r.matches.len(), 2, "the whole transcript");
+        assert_eq!(pane.current, Some(1), "still the latest");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn new_sessions_get_git_context_without_a_reload() {
+        let mut a = app(vec![session("a", "A", 0)]);
+        a.merge(Changes {
+            updated: vec![with(Agent::Claude, "n", "New", "/w/new", 0)],
+            removed: Vec::new(),
+        });
+        assert!(a.git_wanted.lock().unwrap().contains(&"/w/new".to_string()));
+    }
+
+    #[test]
+    fn ctrl_chords_are_not_typed() {
+        let mut a = five();
+        press(&mut a, KeyCode::Char('/'));
+        ctrl(&mut a, 'w');
+        assert_eq!(a.filter, "");
+        press(&mut a, KeyCode::Enter);
+        press(&mut a, KeyCode::Char('v'));
+        press(&mut a, KeyCode::Char('/'));
+        ctrl(&mut a, 'a');
+        assert_eq!(a.reading.as_ref().unwrap().query, "");
+    }
+
+    #[test]
+    fn small_edges() {
+        let mut empty = app(Vec::new());
+        press(&mut empty, KeyCode::Char('g'));
+        assert_eq!(empty.table.selected(), None, "g on an empty list");
+        let mut a = app(vec![session("a", "A", 0)]);
+        let gone = a.sessions[0].path.clone();
+        a.merge(Changes {
+            updated: Vec::new(),
+            removed: vec![gone],
+        });
+        assert_eq!(a.status, None, "an automatic reload says nothing");
     }
 
     #[test]

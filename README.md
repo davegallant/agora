@@ -12,7 +12,9 @@ now, and everything you can resume, across **Claude Code**, **Codex** and **pi**
   own, and the preview follows a conversation as it is written.
 - **Search** by title, project, path or agent as you type, and through the
   conversation text itself a moment later, with the matching passage shown in
-  the preview. Every word must match; tool output and file contents don't count.
+  the preview. Titles match every word anywhere; conversation text matches the
+  query as one phrase, across line breaks. Tool output and file contents don't
+  count.
 - **Preview** of the end of the conversation for the selected session.
 - **Git context**: `±` marks a session whose folder has uncommitted changes,
   and the preview shows its branch and how far it is ahead of or behind.

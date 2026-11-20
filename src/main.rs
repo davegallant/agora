@@ -19,6 +19,7 @@ mod ui;
 use anyhow::{Context, Result};
 use ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use ratatui::crossterm::execute;
+use ratatui::crossterm::terminal::{enable_raw_mode, EnterAlternateScreen};
 use std::path::PathBuf;
 
 fn main() -> Result<()> {
@@ -114,10 +115,18 @@ fn main() -> Result<()> {
     // Resuming runs the agent in the foreground; when it exits, agora comes
     // back where it was.
     let mut app = app::App::new(home, sessions);
+    // Set the terminal up once. ratatui's panic hook restores raw mode and the
+    // screen; ours turns mouse capture off first, or the shell fills with
+    // mouse escapes after a panic.
+    let mut terminal = ratatui::init();
+    let restore = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = execute!(std::io::stdout(), DisableMouseCapture);
+        restore(info);
+    }));
+    // Mouse capture lets the wheel scroll the panes; shift-drag still selects text.
+    let _ = execute!(std::io::stdout(), EnableMouseCapture);
     loop {
-        let mut terminal = ratatui::init();
-        // Mouse capture lets the wheel scroll the panes; shift-drag still selects text.
-        let _ = execute!(std::io::stdout(), EnableMouseCapture);
         let result = app.run(&mut terminal);
         let _ = execute!(std::io::stdout(), DisableMouseCapture);
         ratatui::restore();
@@ -131,5 +140,9 @@ fn main() -> Result<()> {
             Ok(st) => Some(format!("{} exited ({st})", argv[0])),
             Err(e) => Some(format!("could not run {}: {e}", argv[0])),
         };
+        // Back from the agent: take the terminal again.
+        enable_raw_mode()?;
+        execute!(std::io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
+        terminal.clear()?;
     }
 }

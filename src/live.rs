@@ -160,11 +160,19 @@ pub fn resolve(sessions: &[Session], snap: &Snapshot) -> HashMap<usize, Live> {
 
     for term in &snap.terms {
         let (title, glyph) = ghostty::parse_title(&term.title);
-        let hit = sessions.iter().enumerate().find(|(i, s)| {
+        let fits = |(i, s): &(usize, &Session)| {
             !live.contains_key(i)
-                && (term.cwd.is_empty() || term.cwd == s.cwd)
+                && (term.cwd.is_empty() || term.cwd == s.cwd || term.cwd == s.dir)
                 && title_matches(&title, s)
-        });
+        };
+        // A Claude session that `claude agents` reports running beats a newer
+        // past one with the same title.
+        let hit = sessions
+            .iter()
+            .enumerate()
+            .filter(fits)
+            .find(|(_, s)| s.agent == Agent::Claude && snap.claude.contains_key(&s.id))
+            .or_else(|| sessions.iter().enumerate().find(fits));
         if let Some((i, _)) = hit {
             let state = match glyph {
                 Glyph::Bell => State::NeedsYou,
@@ -220,6 +228,7 @@ mod tests {
             id: id.into(),
             path: PathBuf::new(),
             cwd: cwd.into(),
+            dir: cwd.into(),
             title: title.into(),
             mtime: SystemTime::UNIX_EPOCH,
             size: 0,
@@ -268,6 +277,23 @@ mod tests {
         assert_eq!(live[&3].state, State::NeedsYou);
         assert_eq!(live[&3].background.as_deref(), Some("abcd"));
         assert!(!live.contains_key(&4));
+    }
+
+    #[test]
+    fn a_running_claude_session_keeps_its_tab() {
+        // The newer session shares the title but is not the one running.
+        let sessions = vec![
+            s(Agent::Claude, "c-new", "Fix bug", "/w/a"),
+            s(Agent::Claude, "c-run", "Fix bug", "/w/a"),
+        ];
+        let mut snap = Snapshot {
+            terms: vec![term("T1", "✳ Fix bug", "/w/a")],
+            ..Default::default()
+        };
+        snap.claude.insert("c-run".into(), ClaudeLive::default());
+        let live = resolve(&sessions, &snap);
+        assert_eq!(live[&1].term.as_ref().map(|t| t.id.as_str()), Some("T1"));
+        assert!(!live.contains_key(&0), "{live:?}");
     }
 
     #[test]
