@@ -28,6 +28,7 @@ pub const KEYS: &[(&str, &str)] = &[
     ("c C", "next / previous channel"),
     ("tab", "cycle agent: all, claude, codex, pi"),
     ("l", "live sessions only"),
+    ("s", "sort by recent, project or size"),
     ("T", "choose a theme"),
     ("r", "reload every session from disk"),
     ("?", "show these keys"),
@@ -203,6 +204,9 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
     }
     if app.live_only {
         parts.push("live".into());
+    }
+    if app.sort != crate::state::Sort::Recent {
+        parts.push(format!("by {}", app.sort.name()));
     }
     let scope = if parts.is_empty() {
         String::new()
@@ -628,6 +632,9 @@ mod tests {
         app.live_only = false;
         app.rebuild_view();
         assert_has(&screen(&mut app, 100, 20), &["[#a]"]);
+        app.sort = crate::state::Sort::Project;
+        assert_has(&screen(&mut app, 100, 20), &["[#a, by project]"]);
+        app.sort = crate::state::Sort::Recent;
         app.channel_filter = None;
 
         app.live_only = false;

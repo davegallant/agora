@@ -4,6 +4,7 @@ use crate::live::{self, Live, Snapshot, State};
 use crate::preview::{self, Rendered};
 use crate::search::{self, Files, Searcher};
 use crate::sessions::{self, Agent, Changes, Msg, Session};
+use crate::state::Sort;
 use crate::theme::{self, Theme, THEMES};
 use anyhow::Result;
 use ratatui::crossterm::event::{
@@ -69,6 +70,7 @@ pub struct App {
     pub filtering: bool,
     pub agent_filter: Option<Agent>,
     pub live_only: bool,
+    pub sort: Sort,
     pub status: Option<String>,
     previews: HashMap<(usize, bool), Vec<Msg>>,
     pub pane: PreviewPane,
@@ -143,6 +145,7 @@ impl App {
             filtering: false,
             agent_filter: None,
             live_only: false,
+            sort: Sort::default(),
             status: None,
             previews: HashMap::new(),
             pane: PreviewPane {
@@ -265,7 +268,19 @@ impl App {
                         || self.text_hits.contains_key(&i))
             })
             .collect();
-        view.sort_by_key(|&i| (self.rank(i), Reverse(self.sessions[i].mtime)));
+        let ss = &self.sessions;
+        view.sort_by(|&a, &b| {
+            let (x, y) = (&ss[a], &ss[b]);
+            let within = match self.sort {
+                Sort::Recent => std::cmp::Ordering::Equal,
+                Sort::Project => x.project().to_lowercase().cmp(&y.project().to_lowercase()),
+                Sort::Size => y.size.cmp(&x.size),
+            };
+            self.rank(a)
+                .cmp(&self.rank(b))
+                .then(within)
+                .then(Reverse(x.mtime).cmp(&Reverse(y.mtime)))
+        });
         self.view = view;
         let pos = keep
             .and_then(|k| self.view.iter().position(|&i| i == k))
@@ -556,6 +571,10 @@ impl App {
                 self.rebuild_view();
             }
             KeyCode::Char('r') => self.reload(),
+            KeyCode::Char('s') => {
+                self.sort = self.sort.next();
+                self.rebuild_view();
+            }
             KeyCode::Char('J') => self.scroll_preview(3),
             KeyCode::Char('K') => self.scroll_preview(-3),
             KeyCode::Char('f') if ctrl => self.scroll_preview(self.pane.height as isize - 2),
@@ -1414,6 +1433,46 @@ mod tests {
         }
         assert_eq!(a.theme().name, THEMES[THEMES.len() - 1].name);
         fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn s_cycles_the_sort_and_live_stays_on_top() {
+        use crate::state::Sort;
+        let mut a = app(vec![
+            Session {
+                size: 10,
+                ..with(Agent::Claude, "a", "A", "/w/zeta", 0)
+            },
+            Session {
+                size: 300,
+                ..with(Agent::Claude, "b", "B", "/w/alpha", 10)
+            },
+            Session {
+                size: 20,
+                ..with(Agent::Claude, "c", "C", "/w/mid", 20)
+            },
+        ]);
+        a.live.insert(2, live(State::Busy));
+        a.rebuild_view();
+        assert_eq!(titles(&a), ["C", "A", "B"]);
+        press(&mut a, KeyCode::Char('s'));
+        assert_eq!(a.sort, Sort::Project);
+        assert_eq!(titles(&a), ["C", "B", "A"]);
+        press(&mut a, KeyCode::Char('s'));
+        assert_eq!(a.sort, Sort::Size);
+        assert_eq!(titles(&a), ["C", "B", "A"], "size: largest first");
+        press(&mut a, KeyCode::Char('s'));
+        assert_eq!(a.sort, Sort::Recent);
+        assert_eq!(titles(&a), ["C", "A", "B"]);
+    }
+
+    #[test]
+    fn sorting_keeps_the_selection_on_its_session() {
+        let mut a = five();
+        press(&mut a, KeyCode::Char('j'));
+        let was = a.selected();
+        press(&mut a, KeyCode::Char('s'));
+        assert_eq!(a.selected(), was);
     }
 
     #[test]

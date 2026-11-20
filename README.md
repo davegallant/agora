@@ -51,6 +51,7 @@ Other terminals don't have these yet.
 | `c` `C` | next / previous channel; back to all after the last |
 | `tab` | cycle agent: all, claude, codex, pi |
 | `l` | live sessions only |
+| `s` | sort by recent, project or size; live sessions stay on top |
 | `j` `k` `↑` `↓` `g` `G` | move |
 | `T` | choose a theme: `j`/`k` try one, `enter` keeps it, `esc` cancels |
 | `r` | reload every session from disk |
