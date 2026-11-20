@@ -78,7 +78,7 @@ fn running_in_background(live: Option<&Live>) -> bool {
     live.is_some_and(|l| l.state == State::Open && l.shells > 0)
 }
 
-fn badge(t: &Theme, live: Option<&Live>, pinned: bool) -> Span<'static> {
+fn badge(t: &Theme, live: Option<&Live>) -> Span<'static> {
     if running_in_background(live) {
         return Span::styled(" ◐ ", Style::new().fg(t.open));
     }
@@ -88,7 +88,6 @@ fn badge(t: &Theme, live: Option<&Live>, pinned: bool) -> Span<'static> {
         }
         Some(State::Busy) => Span::styled(" ● ", Style::new().fg(t.busy)),
         Some(State::Open) => Span::styled(" ○ ", Style::new().fg(t.open)),
-        None if pinned => Span::styled(" ★ ", Style::new().fg(t.accent)),
         None => Span::raw("   "),
     }
 }
@@ -271,7 +270,7 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
                 Style::new()
             };
             Row::new(vec![
-                Cell::from(badge(t, live, app.is_pinned(i))),
+                Cell::from(badge(t, live)),
                 Cell::from(Span::styled(
                     s.agent.name(),
                     Style::new().fg(agent_color(t, s.agent)),
@@ -280,7 +279,14 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
                     s.project().to_string(),
                     Style::new().fg(t.subtle),
                 )),
-                Cell::from(Span::styled(s.title.clone(), title_style)),
+                Cell::from(Line::from(if app.is_pinned(i) {
+                    vec![
+                        Span::styled("★ ", Style::new().fg(t.accent)),
+                        Span::styled(s.title.clone(), title_style),
+                    ]
+                } else {
+                    vec![Span::styled(s.title.clone(), title_style)]
+                })),
                 Cell::from(Line::from(size(s.size)).right_aligned().fg(t.muted)),
                 Cell::from(Line::from(age(s.mtime)).right_aligned().fg(t.muted)),
             ])
@@ -321,6 +327,10 @@ fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
         Line::from(vec![
             Span::styled(s.agent.name(), Style::new().fg(agent_color(t, s.agent))),
             Span::raw(format!(" · {} ago · {}", age(s.mtime), s.cwd)).fg(t.subtle),
+            Span::styled(
+                if app.is_pinned(i) { " · pinned" } else { "" },
+                Style::new().fg(t.accent),
+            ),
         ]),
     ];
     let action = match &live {
@@ -592,16 +602,14 @@ mod tests {
             background: None,
             shells,
         };
-        assert_eq!(badge(T, Some(&l(State::NeedsYou, 0)), false).content, " ! ");
-        assert_eq!(badge(T, Some(&l(State::Busy, 0)), false).content, " ● ");
-        assert_eq!(badge(T, Some(&l(State::Open, 0)), false).content, " ○ ");
-        assert_eq!(badge(T, Some(&l(State::Open, 1)), false).content, " ◐ ");
-        assert_eq!(badge(T, None, true).content, " ★ ");
-        assert_eq!(badge(T, Some(&l(State::Busy, 0)), true).content, " ● ");
+        assert_eq!(badge(T, Some(&l(State::NeedsYou, 0))).content, " ! ");
+        assert_eq!(badge(T, Some(&l(State::Busy, 0))).content, " ● ");
+        assert_eq!(badge(T, Some(&l(State::Open, 0))).content, " ○ ");
+        assert_eq!(badge(T, Some(&l(State::Open, 1))).content, " ◐ ");
         // Busy and waiting sessions already show they aren't idle.
-        assert_eq!(badge(T, Some(&l(State::Busy, 1)), false).content, " ● ");
-        assert_eq!(badge(T, Some(&l(State::NeedsYou, 1)), false).content, " ! ");
-        assert_eq!(badge(T, None, false).content, "   ");
+        assert_eq!(badge(T, Some(&l(State::Busy, 1))).content, " ● ");
+        assert_eq!(badge(T, Some(&l(State::NeedsYou, 1))).content, " ! ");
+        assert_eq!(badge(T, None).content, "   ");
     }
 
     #[test]
@@ -670,6 +678,32 @@ mod tests {
             &screen(&mut app, 100, 20),
             &["1 match in conversation text"],
         );
+    }
+
+    #[test]
+    fn pinned_sessions_show_a_star_even_when_live() {
+        let mut app = App::new(
+            PathBuf::from("/nonexistent"),
+            vec![session("a", "Alpha", PathBuf::from("/nonexistent/a"))],
+        );
+        app.pins.toggle(Agent::Claude, "a");
+        app.rebuild_view();
+        let s = screen(&mut app, 100, 20);
+        assert_has(&s, &["★ Alpha", " · pinned"]);
+        app.live.insert(
+            0,
+            Live {
+                state: State::Busy,
+                term: None,
+                background: None,
+                shells: 0,
+            },
+        );
+        app.rebuild_view();
+        assert_has(&screen(&mut app, 100, 20), &[" ●", "★ Alpha", " · pinned"]);
+        app.pins.toggle(Agent::Claude, "a");
+        let s = screen(&mut app, 100, 20);
+        assert!(!s.contains('★') && !s.contains("pinned"), "{s}");
     }
 
     #[test]
