@@ -41,6 +41,14 @@ pub enum Follow {
     Top(usize),
 }
 
+/// The full-screen transcript view, with its own search.
+#[derive(Debug, Default)]
+pub struct Reading {
+    pub query: String,
+    /// Typing into `query`.
+    pub typing: bool,
+}
+
 pub struct PreviewPane {
     /// (session, width, filter, current match, full transcript, theme) of `r`.
     key: Option<(usize, usize, String, Option<usize>, bool, usize)>,
@@ -105,6 +113,8 @@ pub struct App {
     pub picking_theme: Option<usize>,
     /// The `?` overlay is up; the next key closes it.
     pub showing_keys: bool,
+    /// The selected session is open full-screen.
+    pub reading: Option<Reading>,
 }
 
 /// Text search starts after this pause in typing, and only for longer queries.
@@ -191,6 +201,7 @@ impl App {
             theme,
             picking_theme: None,
             showing_keys: false,
+            reading: None,
         };
         app.index_sessions();
         app.pins = Pins::load(&app.home);
@@ -447,17 +458,18 @@ impl App {
     /// Lay out session `i`'s conversation for a pane `width` columns wide.
     /// A session that matched on its text loads in full, so the match is in it.
     pub fn preview_pane(&mut self, i: usize, width: usize) -> &mut PreviewPane {
-        if self.pane.session != Some(i) || self.pane.filter != self.filter {
+        let query = self.query().to_string();
+        if self.pane.session != Some(i) || self.pane.filter != query {
             self.pane.session = Some(i);
-            self.pane.filter = self.filter.clone();
+            self.pane.filter = query.clone();
             self.pane.current = None;
             self.pane.follow = Follow::Bottom;
         }
-        let full = self.text_hits.contains_key(&i);
+        let full = self.reading.is_some() || self.text_hits.contains_key(&i);
         let t = self.theme;
-        let key = (i, width, self.filter.clone(), self.pane.current, full, t);
+        let key = (i, width, query.clone(), self.pane.current, full, t);
         if self.pane.key.as_ref() != Some(&key) {
-            let terms = search::terms(&self.filter);
+            let terms = search::terms(&query);
             let msgs = self.previews.entry((i, full)).or_insert_with(|| {
                 sessions::preview(&self.sessions[i], if full { usize::MAX } else { 200 }, full)
             });
@@ -469,10 +481,74 @@ impl App {
                 self.pane.current = Some(last);
                 self.pane.follow = Follow::Match;
             }
-            self.pane.key = Some((i, width, self.filter.clone(), self.pane.current, full, t));
+            self.pane.key = Some((i, width, query, self.pane.current, full, t));
             self.pane.r = r;
         }
         &mut self.pane
+    }
+
+    /// What the preview highlights: the full view's own search, else the list's.
+    pub fn query(&self) -> &str {
+        self.reading.as_ref().map_or(&self.filter, |r| &r.query)
+    }
+
+    fn open_reading(&mut self) {
+        if self.selected().is_some() {
+            self.reading = Some(Reading {
+                query: self.filter.clone(),
+                typing: false,
+            });
+            self.pane.session = None;
+        }
+    }
+
+    fn close_reading(&mut self) {
+        self.reading = None;
+        self.pane.session = None;
+    }
+
+    fn on_reading_key(&mut self, k: KeyEvent, ctrl: bool) {
+        let page = self.pane.height.saturating_sub(2).max(1) as isize;
+        let Some(r) = self.reading.as_mut() else {
+            return;
+        };
+        if r.typing {
+            match k.code {
+                KeyCode::Esc => {
+                    r.query.clear();
+                    r.typing = false;
+                }
+                KeyCode::Enter => r.typing = false,
+                KeyCode::Backspace => {
+                    r.query.pop();
+                }
+                KeyCode::Char('u') if ctrl => r.query.clear(),
+                KeyCode::Char(c) => r.query.push(c),
+                _ => {}
+            }
+            return;
+        }
+        match k.code {
+            KeyCode::Char('v') | KeyCode::Esc | KeyCode::Char('q') => self.close_reading(),
+            KeyCode::Char('/') => {
+                r.query.clear();
+                r.typing = true;
+            }
+            KeyCode::Char('j') | KeyCode::Down => self.scroll_preview(1),
+            KeyCode::Char('k') | KeyCode::Up => self.scroll_preview(-1),
+            KeyCode::Char('J') => self.scroll_preview(3),
+            KeyCode::Char('K') => self.scroll_preview(-3),
+            KeyCode::Char('f') if ctrl => self.scroll_preview(page),
+            KeyCode::Char('b') if ctrl => self.scroll_preview(-page),
+            KeyCode::Char(' ') | KeyCode::PageDown => self.scroll_preview(page),
+            KeyCode::PageUp => self.scroll_preview(-page),
+            KeyCode::Char('g') | KeyCode::Home => self.pane.follow = Follow::Top(0),
+            KeyCode::Char('G') | KeyCode::End => self.pane.follow = Follow::Bottom,
+            KeyCode::Char('n') => self.jump_match(1),
+            KeyCode::Char('N') => self.jump_match(-1),
+            KeyCode::Char('?') => self.showing_keys = true,
+            _ => {}
+        }
     }
 
     fn scroll_preview(&mut self, delta: isize) {
@@ -604,6 +680,10 @@ impl App {
             self.showing_keys = false;
             return None;
         }
+        if self.reading.is_some() {
+            self.on_reading_key(k, ctrl);
+            return None;
+        }
         match k.code {
             KeyCode::Down => return self.nav(1),
             KeyCode::Up => return self.nav(-1),
@@ -679,6 +759,7 @@ impl App {
             KeyCode::Char('y') => self.copy(false),
             KeyCode::Char('Y') => self.copy(true),
             KeyCode::Char('p') => self.toggle_pin(),
+            KeyCode::Char('v') => self.open_reading(),
             KeyCode::Char('T') => self.picking_theme = Some(self.theme),
             KeyCode::Char('?') => self.showing_keys = true,
             _ => {}
@@ -1669,6 +1750,107 @@ mod tests {
         assert!(both.contains(Agent::Claude, "y"));
         assert!(a.is_pinned(0), "a now shows b's pin too");
         fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn v_opens_the_full_view_and_v_esc_or_q_close_it() {
+        let mut a = five();
+        press(&mut a, KeyCode::Char('j'));
+        for close in [KeyCode::Char('v'), KeyCode::Esc, KeyCode::Char('q')] {
+            press(&mut a, KeyCode::Char('v'));
+            assert!(a.reading.is_some());
+            assert!(press(&mut a, close).is_none(), "{close:?} doesn't quit");
+            assert!(a.reading.is_none(), "{close:?} closes");
+            assert_eq!(a.selected(), Some(1), "back on the same row");
+        }
+    }
+
+    #[test]
+    fn the_full_view_loads_the_whole_transcript() {
+        let dir = tmpdir("reading-full");
+        let mut lines: Vec<(bool, String)> = vec![(true, "the very first question".into())];
+        lines.extend((0..300).map(|n| (n % 2 == 0, format!("message {n}"))));
+        let lines: Vec<(bool, &str)> = lines.iter().map(|(u, t)| (*u, t.as_str())).collect();
+        let mut a = app(vec![on_disk(&dir, "s", "S", &lines)]);
+        press(&mut a, KeyCode::Char('v'));
+        press(&mut a, KeyCode::Char('/'));
+        typed(&mut a, "very first");
+        press(&mut a, KeyCode::Enter);
+        assert_eq!(
+            a.preview_pane(0, 80).r.matches.len(),
+            1,
+            "the start is loaded"
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn searching_the_full_view_leaves_the_list_alone() {
+        let dir = tmpdir("reading-search");
+        let mut a = app(vec![
+            on_disk(&dir, "s", "S", &[(true, "redis one"), (false, "redis two")]),
+            session("t", "T", 10),
+        ]);
+        press(&mut a, KeyCode::Char('v'));
+        press(&mut a, KeyCode::Char('/'));
+        typed(&mut a, "redis");
+        assert_eq!(a.filter, "", "the list filter is untouched");
+        assert_eq!(titles(&a), ["S", "T"]);
+        press(&mut a, KeyCode::Enter);
+        assert_eq!(a.preview_pane(0, 80).r.matches.len(), 2);
+        assert_eq!(a.pane.current, Some(1), "starts on the latest match");
+        press(&mut a, KeyCode::Char('n'));
+        assert_eq!(a.pane.current, Some(0));
+        press(&mut a, KeyCode::Char('/'));
+        press(&mut a, KeyCode::Esc);
+        assert_eq!(
+            a.reading.as_ref().unwrap().query,
+            "",
+            "esc clears the search"
+        );
+        assert!(a.reading.is_some(), "but stays in the view");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_full_view_starts_with_the_list_search() {
+        let mut a = five();
+        press(&mut a, KeyCode::Char('/'));
+        typed(&mut a, "T1");
+        press(&mut a, KeyCode::Enter);
+        press(&mut a, KeyCode::Char('v'));
+        assert_eq!(a.reading.as_ref().unwrap().query, "T1");
+        press(&mut a, KeyCode::Char('/'));
+        typed(&mut a, "x");
+        assert_eq!(
+            a.reading.as_ref().unwrap().query,
+            "x",
+            "/ starts a new search"
+        );
+        press(&mut a, KeyCode::Char('v'));
+        press(&mut a, KeyCode::Enter);
+        press(&mut a, KeyCode::Char('v'));
+        assert_eq!(a.filter, "T1", "the list search is as it was");
+        assert_eq!(titles(&a), ["T1"]);
+    }
+
+    #[test]
+    fn scrolling_the_full_view() {
+        let mut a = five();
+        press(&mut a, KeyCode::Char('v'));
+        a.pane.top = 10;
+        a.pane.height = 20;
+        press(&mut a, KeyCode::Char('j'));
+        assert_eq!(a.pane.follow, Follow::Top(11));
+        press(&mut a, KeyCode::Up);
+        assert_eq!(a.pane.follow, Follow::Top(9));
+        press(&mut a, KeyCode::Char(' '));
+        assert_eq!(a.pane.follow, Follow::Top(28));
+        press(&mut a, KeyCode::Char('g'));
+        assert_eq!(a.pane.follow, Follow::Top(0));
+        press(&mut a, KeyCode::Char('G'));
+        assert_eq!(a.pane.follow, Follow::Bottom);
+        assert_eq!(a.selected(), Some(0), "the list doesn't move");
     }
 
     #[test]

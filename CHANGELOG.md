@@ -15,6 +15,9 @@ All notable changes to agora. The format follows
 - `p` pins a session so it sits just under the live ones, with `★` before
   its title and "pinned" in the preview; pins are kept in
   `~/.config/agora/pins`.
+- `v` opens the whole conversation full-screen. `/` searches just that
+  transcript (the list filter is left alone), `n`/`N` jump between matches,
+  and `v`, `esc` or `q` go back to the list.
 - Git context: a `±` after the project marks a folder with uncommitted
   changes, and the preview shows its branch, how many files are uncommitted,
   and how far it is ahead of or behind its remote. Checked in the background

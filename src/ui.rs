@@ -17,6 +17,10 @@ use std::time::SystemTime;
 pub const KEYS: &[(&str, &str)] = &[
     ("enter", "jump to the session's tab, or resume it here"),
     ("t", "resume or attach in a new Ghostty tab"),
+    (
+        "v",
+        "read the whole conversation full-screen; / searches it, esc closes",
+    ),
     ("y Y", "copy the resume command / the project path"),
     ("/", "search titles and conversation text; esc clears"),
     ("n N", "next / previous match in the preview"),
@@ -106,12 +110,18 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
     let [main, footer] =
         Layout::vertical([Constraint::Min(3), Constraint::Length(1)]).areas(f.area());
-    let [list, preview] =
-        Layout::vertical([Constraint::Percentage(45), Constraint::Percentage(55)]).areas(main);
-    app.list_area = list;
-    app.preview_area = preview;
-    draw_list(f, app, list);
-    draw_preview(f, app, preview);
+    if app.reading.is_some() {
+        app.list_area = Rect::default();
+        app.preview_area = main;
+        draw_preview(f, app, main);
+    } else {
+        let [list, preview] =
+            Layout::vertical([Constraint::Percentage(45), Constraint::Percentage(55)]).areas(main);
+        app.list_area = list;
+        app.preview_area = preview;
+        draw_list(f, app, list);
+        draw_preview(f, app, preview);
+    }
     draw_footer(f, app, footer);
     if app.picking_theme.is_some() {
         draw_theme_picker(f, app);
@@ -326,7 +336,7 @@ fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
 
     let s = app.sessions[i].clone();
     let live = app.live.get(&i).cloned();
-    let terms = search::terms(&app.filter);
+    let terms = search::terms(app.query());
     let text_hit = app.text_hits.contains_key(&i);
     let mut header = vec![
         Line::from(s.title.clone()).bold(),
@@ -377,7 +387,10 @@ fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
         Some(State::Open) => Span::styled("open  ", Style::new().fg(t.open)),
         None => Span::raw(""),
     };
-    header.push(Line::from(vec![state, Span::raw(action).fg(t.muted)]));
+    let action = if app.reading.is_some() { "" } else { action };
+    if !(action.is_empty() && state.content.is_empty()) {
+        header.push(Line::from(vec![state, Span::raw(action).fg(t.muted)]));
+    }
 
     // The body is laid out first: the block title reports its matches.
     let outer = Block::default().borders(Borders::ALL).inner(area);
@@ -397,6 +410,7 @@ fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
     let text_width = body_area.width.saturating_sub(1).max(1) as usize;
     let height = body_area.height as usize;
 
+    let reading = app.reading.is_some();
     let pane = app.preview_pane(i, text_width);
     let total = pane.r.rows.len();
     let max_top = total.saturating_sub(height);
@@ -412,7 +426,11 @@ fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
     pane.top = top;
     pane.height = height;
 
-    let mut title = vec![Span::raw(" preview ")];
+    let mut title = vec![Span::raw(if reading {
+        " transcript "
+    } else {
+        " preview "
+    })];
     if !pane.r.matches.is_empty() {
         let cur = pane.current.map_or(0, |c| c + 1);
         title.push(Span::styled(
@@ -471,6 +489,14 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
     let t = app.theme();
     let text = if let Some(s) = &app.status {
         Line::from(s.clone()).fg(t.accent)
+    } else if let Some(r) = app.reading.as_ref().filter(|r| r.typing) {
+        Line::from(vec![
+            Span::styled(" / ", Style::new().fg(t.accent)),
+            Span::raw(format!("{}█", r.query)),
+            Span::styled("   enter done · esc clear", Style::new().fg(t.muted)),
+        ])
+    } else if app.reading.is_some() && !app.showing_keys {
+        Line::from(" j/k scroll · n/N match · / search · esc close").fg(t.muted)
     } else if app.picking_theme.is_some() {
         Line::from(" j/k try a theme · enter keep · esc cancel").fg(t.muted)
     } else if app.showing_keys {
@@ -729,6 +755,34 @@ mod tests {
         app.pins.toggle(Agent::Claude, "a");
         let s = screen(&mut app, 100, 20);
         assert!(!s.contains('★') && !s.contains("pinned"), "{s}");
+    }
+
+    #[test]
+    fn the_full_view_fills_the_screen() {
+        let path = long_transcript("reading", 40);
+        let mut app = App::new(
+            PathBuf::from("/nonexistent"),
+            vec![session("a", "Alpha", path)],
+        );
+        app.reading = Some(crate::app::Reading::default());
+        let s = screen(&mut app, 80, 30);
+        assert!(!s.contains("agora ·"), "the list is hidden:\n{s}");
+        assert!(
+            !s.contains("enter: resume"),
+            "enter does nothing here:\n{s}"
+        );
+        assert_has(
+            &s,
+            &[
+                " transcript ",
+                "Alpha",
+                "question 39",
+                "/ search · esc close",
+            ],
+        );
+        app.reading.as_mut().unwrap().typing = true;
+        app.reading.as_mut().unwrap().query = "quest".into();
+        assert_has(&screen(&mut app, 80, 30), &[" / quest█"]);
     }
 
     #[test]

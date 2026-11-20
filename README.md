@@ -48,6 +48,7 @@ Other terminals don't have these yet.
 | --- | --- |
 | `enter` | attach / resume here (jump to tab in Ghostty) |
 | `t` | resume (or attach) in a new tab (Ghostty only) |
+| `v` | read the whole conversation full-screen: `/` searches it, `n`/`N` jump, `esc` closes |
 | `y` `Y` | copy the resume command / the project path |
 | `/` | search titles and conversation text; `esc` clears |
 | `c` `C` | next / previous channel; back to all after the last |
