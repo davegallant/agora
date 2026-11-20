@@ -3,37 +3,67 @@
 //! Tries `pbcopy`, `wl-copy` and `xclip` in turn; if none works, falls back to
 //! the OSC 52 escape, which most terminals honour, over SSH too.
 
-#[cfg(not(test))]
-pub fn copy(text: &str) -> std::io::Result<()> {
-    use std::io::Write;
-    use std::process::{Command, Stdio};
+use std::io::Write;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
+/// How the text reached the clipboard.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Via {
+    /// A clipboard tool took it.
+    Tool,
+    /// Sent as OSC 52; the terminal may or may not honour it.
+    Terminal,
+}
+
+/// Pipe `text` into `argv`, giving up (and killing it) after `timeout`.
+/// True if it took the text and exited cleanly.
+pub fn run_tool(argv: &[&str], text: &str, timeout: Duration) -> bool {
+    let Ok(mut child) = Command::new(argv[0])
+        .args(&argv[1..])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+    // Dropping stdin closes it, so the tool sees the end of the text.
+    let wrote = child
+        .stdin
+        .take()
+        .is_some_and(|mut w| w.write_all(text.as_bytes()).is_ok());
+    let start = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return wrote && status.success(),
+            Ok(None) if start.elapsed() < timeout => std::thread::sleep(Duration::from_millis(10)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
+    }
+}
+
+#[cfg(not(test))]
+pub fn copy(text: &str) -> std::io::Result<Via> {
     const TOOLS: &[&[&str]] = &[
         &["pbcopy"],
         &["wl-copy"],
         &["xclip", "-selection", "clipboard"],
     ];
     for argv in TOOLS {
-        let Ok(mut child) = Command::new(argv[0])
-            .args(&argv[1..])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-        else {
-            continue;
-        };
-        let wrote = child
-            .stdin
-            .take()
-            .is_some_and(|mut w| w.write_all(text.as_bytes()).is_ok());
-        if child.wait().is_ok_and(|s| s.success()) && wrote {
-            return Ok(());
+        if run_tool(argv, text, Duration::from_secs(1)) {
+            return Ok(Via::Tool);
         }
     }
+    // Safe beside ratatui: it has flushed its frame, and OSC moves no cursor.
     let mut out = std::io::stdout();
     write!(out, "\x1b]52;c;{}\x07", base64(text.as_bytes()))?;
-    out.flush()
+    out.flush()?;
+    Ok(Via::Terminal)
 }
 
 #[cfg(test)]
@@ -43,9 +73,9 @@ thread_local! {
 
 /// In tests the clipboard is a per-thread slot, read back with `last`.
 #[cfg(test)]
-pub fn copy(text: &str) -> std::io::Result<()> {
+pub fn copy(text: &str) -> std::io::Result<Via> {
     LAST.with(|l| *l.borrow_mut() = Some(text.to_string()));
-    Ok(())
+    Ok(Via::Tool)
 }
 
 #[cfg(test)]
@@ -78,6 +108,42 @@ fn base64(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::time::{Duration, Instant};
+
+    fn sh(script: &str) -> Vec<&str> {
+        vec!["sh", "-c", script]
+    }
+
+    #[test]
+    fn a_tool_that_takes_the_text_and_exits_works() {
+        assert!(run_tool(
+            &sh("cat >/dev/null"),
+            "hi",
+            Duration::from_secs(2)
+        ));
+        assert!(!run_tool(
+            &sh("cat >/dev/null; exit 1"),
+            "hi",
+            Duration::from_secs(2)
+        ));
+        assert!(!run_tool(
+            &["no-such-clipboard-tool"],
+            "hi",
+            Duration::from_secs(2)
+        ));
+    }
+
+    #[test]
+    fn a_stuck_tool_is_given_up_on() {
+        let start = Instant::now();
+        assert!(!run_tool(&sh("sleep 5"), "hi", Duration::from_millis(200)));
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            start.elapsed()
+        );
+    }
 
     #[test]
     fn base64_matches_the_standard() {

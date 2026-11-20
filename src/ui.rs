@@ -61,6 +61,23 @@ fn age(t: SystemTime) -> String {
     }
 }
 
+/// `s` cut to `max` characters, ending in `…` when cut.
+fn shorten(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        s.chars().take(max - 1).chain(['…']).collect()
+    }
+}
+
+/// "3m ago", or "just now".
+fn ago(t: SystemTime) -> String {
+    match age(t).as_str() {
+        "now" => "just now".into(),
+        a => format!("{a} ago"),
+    }
+}
+
 /// A transcript size in at most five characters: `512B`, `240K`, `3.1M`.
 fn size(bytes: u64) -> String {
     const UNITS: [&str; 4] = ["B", "K", "M", "G"];
@@ -286,8 +303,9 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
                     Style::new().fg(agent_color(t, s.agent)),
                 )),
                 Cell::from(Line::from(match app.git.get(&s.cwd) {
+                    // Shorten the name so the mark fits the 18-wide column.
                     Some(g) if g.dirty > 0 => vec![
-                        Span::styled(s.project().to_string(), Style::new().fg(t.subtle)),
+                        Span::styled(shorten(s.project(), 16), Style::new().fg(t.subtle)),
                         Span::styled(" ±", Style::new().fg(t.accent)),
                     ],
                     _ => vec![Span::styled(
@@ -322,6 +340,12 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
     .column_spacing(1)
     .row_highlight_style(Style::new().bg(t.selection).add_modifier(Modifier::BOLD));
     f.render_stateful_widget(table, table_area, &mut app.table);
+    if app.view.is_empty() && app.live_only {
+        f.render_widget(
+            Paragraph::new(" no live sessions · l shows all").fg(t.muted),
+            table_area,
+        );
+    }
 }
 
 fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
@@ -342,7 +366,7 @@ fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
         Line::from(s.title.clone()).bold(),
         Line::from(vec![
             Span::styled(s.agent.name(), Style::new().fg(agent_color(t, s.agent))),
-            Span::raw(format!(" · {} ago · {}", age(s.mtime), s.cwd)).fg(t.subtle),
+            Span::raw(format!(" · {} · {}", ago(s.mtime), s.cwd)).fg(t.subtle),
             Span::styled(
                 if app.is_pinned(i) { " · pinned" } else { "" },
                 Style::new().fg(t.accent),
@@ -783,6 +807,47 @@ mod tests {
         app.reading.as_mut().unwrap().typing = true;
         app.reading.as_mut().unwrap().query = "quest".into();
         assert_has(&screen(&mut app, 80, 30), &[" / quest█"]);
+    }
+
+    #[test]
+    fn a_fresh_session_reads_just_now() {
+        let mut app = App::new(
+            PathBuf::from("/nonexistent"),
+            vec![session("a", "Alpha", PathBuf::from("/nonexistent/a"))],
+        );
+        let s = screen(&mut app, 100, 20);
+        assert_has(&s, &["claude · just now · /w/proj"]);
+        assert!(!s.contains("now ago"), "{s}");
+    }
+
+    #[test]
+    fn a_long_project_name_keeps_its_dirty_mark() {
+        let mut long = session("a", "Alpha", PathBuf::from("/nonexistent/a"));
+        long.cwd = "/w/uca-azure-terraform-workspace".into();
+        let mut app = App::new(PathBuf::from("/nonexistent"), vec![long]);
+        app.git.insert(
+            "/w/uca-azure-terraform-workspace".into(),
+            crate::git::Git {
+                branch: "main".into(),
+                dirty: 1,
+                ..Default::default()
+            },
+        );
+        assert_has(&screen(&mut app, 100, 20), &["uca-azure-terra… ±"]);
+    }
+
+    #[test]
+    fn an_empty_live_only_list_says_how_to_see_everything() {
+        let mut app = App::new(
+            PathBuf::from("/nonexistent"),
+            vec![session("a", "Alpha", PathBuf::from("/nonexistent/a"))],
+        );
+        app.live_only = true;
+        app.rebuild_view();
+        assert_has(
+            &screen(&mut app, 100, 20),
+            &["no live sessions · l shows all"],
+        );
     }
 
     #[test]

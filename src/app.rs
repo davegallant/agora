@@ -143,6 +143,14 @@ fn haystack(s: &Session, channel: &str) -> String {
     .to_lowercase()
 }
 
+/// What the status line says after a copy.
+fn copied_status(text: &str, via: crate::clipboard::Via) -> String {
+    match via {
+        crate::clipboard::Via::Tool => format!("copied “{text}”"),
+        crate::clipboard::Via::Terminal => format!("sent “{text}” to the terminal's clipboard"),
+    }
+}
+
 impl App {
     pub fn new(home: PathBuf, sessions: Vec<Session>) -> Self {
         let channels = Channels::load(&home);
@@ -366,18 +374,15 @@ impl App {
                         || self.text_hits.contains_key(&i))
             })
             .collect();
-        let ss = &self.sessions;
-        view.sort_by(|&a, &b| {
-            let (x, y) = (&ss[a], &ss[b]);
-            let within = match self.sort {
-                Sort::Recent => std::cmp::Ordering::Equal,
-                Sort::Project => x.project().to_lowercase().cmp(&y.project().to_lowercase()),
-                Sort::Size => y.size.cmp(&x.size),
+        // One key per session, so ranking and lowercasing run once each.
+        view.sort_by_cached_key(|&i| {
+            let s = &self.sessions[i];
+            let (project, size) = match self.sort {
+                Sort::Recent => (String::new(), 0),
+                Sort::Project => (s.project().to_lowercase(), 0),
+                Sort::Size => (String::new(), s.size),
             };
-            self.rank(a)
-                .cmp(&self.rank(b))
-                .then(within)
-                .then(Reverse(x.mtime).cmp(&Reverse(y.mtime)))
+            (self.rank(i), project, Reverse(size), Reverse(s.mtime))
         });
         self.view = view;
         let pos = keep
@@ -856,7 +861,7 @@ impl App {
             format!("cd {} && {}", ghostty::shell_quote(&s.cwd), argv.join(" "))
         };
         self.status = Some(match crate::clipboard::copy(&text) {
-            Ok(()) => format!("copied “{text}”"),
+            Ok(via) => copied_status(&text, via),
             Err(e) => format!("could not copy: {e}"),
         });
     }
@@ -1862,6 +1867,10 @@ mod tests {
             Some("cd '/w/my proj' && claude --resume abc")
         );
         assert!(a.status.as_deref().unwrap().starts_with("copied"));
+        assert_eq!(
+            copied_status("x", crate::clipboard::Via::Terminal),
+            "sent “x” to the terminal's clipboard"
+        );
         press(&mut a, KeyCode::Char('Y'));
         assert_eq!(crate::clipboard::last().as_deref(), Some("/w/my proj"));
     }

@@ -10,6 +10,8 @@ All notable changes to agora. The format follows
 
 - The list shows each transcript's size beside its age.
 - `y` copies the selected session's resume command and `Y` its project path.
+  Without `pbcopy`, `wl-copy` or `xclip` it falls back to the terminal's
+  clipboard (OSC 52) and says so.
 - `s` sorts the list by recent, project or size; live sessions stay on top.
 - agora reopens with the channel, agent, live-only and sort you left it with.
 - `p` pins a session so it sits just under the live ones, with `★` before
@@ -33,6 +35,7 @@ All notable changes to agora. The format follows
 
 ### Changed
 
+- With live-only on and nothing live, the list says `l` shows everything.
 - The footer shows only the main keys; the rest are behind `?`.
 - Conversation search matches the whole query as one phrase: `redis cache`
   finds those words together, not each word on its own. The title filter
@@ -42,6 +45,7 @@ All notable changes to agora. The format follows
 
 ### Fixed
 
+- The preview says "just now" for a fresh session, not "now ago".
 - A Ghostty bell marks its session `!` again. Ghostty puts the 🔔 on the tab's
   title, not the terminal's, so agora missed it.
 
