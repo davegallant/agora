@@ -297,6 +297,8 @@ impl App {
     fn toggle_pin(&mut self) {
         let Some(i) = self.selected() else { return };
         let s = &self.sessions[i];
+        // Start from the file, so pins made elsewhere since startup are kept.
+        self.pins = Pins::load(&self.home);
         let pinned = self.pins.toggle(s.agent, &s.id);
         let title = s.title.clone();
         self.status = Some(match self.pins.save(&self.home) {
@@ -1530,11 +1532,16 @@ mod tests {
 
     #[test]
     fn sorting_keeps_the_selection_on_its_session() {
-        let mut a = five();
-        press(&mut a, KeyCode::Char('j'));
+        let mut a = app(vec![
+            with(Agent::Claude, "a", "A", "/w/zeta", 0),
+            with(Agent::Claude, "b", "B", "/w/alpha", 10),
+        ]);
+        assert_eq!(titles(&a), ["A", "B"]);
         let was = a.selected();
         press(&mut a, KeyCode::Char('s'));
-        assert_eq!(a.selected(), was);
+        assert_eq!(titles(&a), ["B", "A"], "the order really changed");
+        assert_eq!(a.selected(), was, "still on A");
+        assert_eq!(a.table.selected(), Some(1), "which moved to row 1");
     }
 
     #[test]
@@ -1611,6 +1618,25 @@ mod tests {
         press(&mut a, KeyCode::Char('p'));
         assert_eq!(titles(&a), ["T0", "T1", "T2", "T3"]);
         assert!(a.status.as_deref().unwrap().starts_with("unpinned"));
+        fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn pinning_keeps_pins_written_by_another_window() {
+        let home = tmpdir("pins-shared");
+        let sessions = || vec![session("x", "X", 0), session("y", "Y", 10)];
+        let mut a = App::new(home.clone(), sessions());
+        let mut b = App::new(home.clone(), sessions());
+        press(&mut b, KeyCode::Char('p'));
+        a.table.select(Some(1));
+        press(&mut a, KeyCode::Char('p'));
+        let both = crate::pins::Pins::load(&home);
+        assert!(
+            both.contains(Agent::Claude, "x"),
+            "b's pin survives a's save"
+        );
+        assert!(both.contains(Agent::Claude, "y"));
+        assert!(a.is_pinned(0), "a now shows b's pin too");
         fs::remove_dir_all(&home).unwrap();
     }
 

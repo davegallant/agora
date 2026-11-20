@@ -50,7 +50,10 @@ impl Pins {
             fs::create_dir_all(dir)?;
         }
         let text: String = self.0.iter().map(|(a, id)| format!("{a} {id}\n")).collect();
-        fs::write(p, text)
+        // Write then rename, so a reader never sees half a file.
+        let tmp = p.with_extension(format!("tmp{}", std::process::id()));
+        fs::write(&tmp, text)?;
+        fs::rename(tmp, p)
     }
 }
 
