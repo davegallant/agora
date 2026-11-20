@@ -40,7 +40,7 @@ fn main() -> Result<()> {
             }
             println!(
                 "\nchannels are set in ~/.config/agora/channels; the theme is kept in\n\
-                 ~/.config/agora/theme."
+                 ~/.config/agora/theme and the last view in ~/.config/agora/state."
             );
             return Ok(());
         }

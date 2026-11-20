@@ -58,6 +58,9 @@ Other terminals don't have these yet.
 | `?` | show every key |
 | `q` | quit |
 
+agora reopens with the channel, agent, live-only and sort you left it with
+(`~/.config/agora/state`).
+
 Themes: `terminal` (your terminal's own colors), `tokyo-night`, `monokai`,
 `catppuccin-mocha`, `dracula`, `gruvbox-dark` and `nord`. The choice is saved in
 `~/.config/agora/theme`.

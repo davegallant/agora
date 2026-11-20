@@ -35,6 +35,12 @@ impl Agent {
             Agent::Pi => "pi",
         }
     }
+
+    pub fn from_name(name: &str) -> Option<Agent> {
+        [Agent::Claude, Agent::Codex, Agent::Pi]
+            .into_iter()
+            .find(|a| a.name() == name.trim())
+    }
 }
 
 #[derive(Clone, Debug)]

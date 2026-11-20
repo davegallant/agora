@@ -4,7 +4,7 @@ use crate::live::{self, Live, Snapshot, State};
 use crate::preview::{self, Rendered};
 use crate::search::{self, Files, Searcher};
 use crate::sessions::{self, Agent, Changes, Msg, Session};
-use crate::state::Sort;
+use crate::state::{self, Sort, ViewState};
 use crate::theme::{self, Theme, THEMES};
 use anyhow::Result;
 use ratatui::crossterm::event::{
@@ -71,6 +71,8 @@ pub struct App {
     pub agent_filter: Option<Agent>,
     pub live_only: bool,
     pub sort: Sort,
+    /// The view as last saved, so only real changes are written.
+    saved_view: ViewState,
     pub status: Option<String>,
     previews: HashMap<(usize, bool), Vec<Msg>>,
     pub pane: PreviewPane,
@@ -146,6 +148,7 @@ impl App {
             agent_filter: None,
             live_only: false,
             sort: Sort::default(),
+            saved_view: ViewState::default(),
             status: None,
             previews: HashMap::new(),
             pane: PreviewPane {
@@ -177,8 +180,41 @@ impl App {
             showing_keys: false,
         };
         app.index_sessions();
+        let mut v = state::load(&app.home);
+        if v.channel
+            .as_ref()
+            .is_some_and(|c| !app.channel_list().contains(c))
+        {
+            v.channel = None;
+        }
+        app.channel_filter = v.channel.clone();
+        app.agent_filter = v.agent;
+        app.live_only = v.live_only;
+        app.sort = v.sort;
+        app.saved_view = v;
         app.rebuild_view();
         app
+    }
+
+    fn view_state(&self) -> ViewState {
+        ViewState {
+            channel: self.channel_filter.clone(),
+            agent: self.agent_filter,
+            live_only: self.live_only,
+            sort: self.sort,
+        }
+    }
+
+    /// Write the view if a key changed it.
+    fn save_view(&mut self) {
+        let v = self.view_state();
+        if v == self.saved_view {
+            return;
+        }
+        if let Err(e) = state::save(&self.home, &v) {
+            self.status = Some(format!("could not save view: {e}"));
+        }
+        self.saved_view = v;
     }
 
     /// Recompute every session's channel and search text.
@@ -589,6 +625,7 @@ impl App {
             KeyCode::Char('?') => self.showing_keys = true,
             _ => {}
         }
+        self.save_view();
         None
     }
 
@@ -1473,6 +1510,55 @@ mod tests {
         let was = a.selected();
         press(&mut a, KeyCode::Char('s'));
         assert_eq!(a.selected(), was);
+    }
+
+    #[test]
+    fn the_view_is_kept_across_runs() {
+        let home = tmpdir("view");
+        let sessions = || vec![with(Agent::Codex, "a", "A", "/w/proj", 0)];
+        let mut a = App::new(home.clone(), sessions());
+        press(&mut a, KeyCode::Char('c'));
+        press(&mut a, KeyCode::Tab);
+        press(&mut a, KeyCode::Char('l'));
+        press(&mut a, KeyCode::Char('s'));
+        let b = App::new(home.clone(), sessions());
+        assert_eq!(b.channel_filter.as_deref(), Some("proj"));
+        assert_eq!(b.agent_filter, Some(Agent::Claude));
+        assert!(b.live_only);
+        assert_eq!(b.sort, Sort::Project);
+        fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn a_saved_channel_that_is_gone_falls_back_to_all() {
+        let home = tmpdir("view-gone");
+        crate::state::save(
+            &home,
+            &crate::state::ViewState {
+                channel: Some("gone".into()),
+                sort: Sort::Size,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let a = App::new(
+            home.clone(),
+            vec![with(Agent::Claude, "a", "A", "/w/proj", 0)],
+        );
+        assert_eq!(a.channel_filter, None);
+        assert_eq!(a.sort, Sort::Size, "the rest still applies");
+        assert_eq!(titles(&a), ["A"]);
+        fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn keys_that_change_nothing_saved_leave_no_state_file() {
+        let home = tmpdir("view-none");
+        let mut a = App::new(home.clone(), vec![session("a", "A", 0)]);
+        press(&mut a, KeyCode::Char('j'));
+        press(&mut a, KeyCode::Char('J'));
+        assert!(!home.join(".config/agora/state").exists());
+        fs::remove_dir_all(&home).unwrap();
     }
 
     #[test]
