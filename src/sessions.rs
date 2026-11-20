@@ -45,6 +45,8 @@ pub struct Session {
     pub cwd: String,
     pub title: String,
     pub mtime: SystemTime,
+    /// The transcript's size in bytes.
+    pub size: u64,
 }
 
 impl Session {
@@ -183,6 +185,7 @@ fn parse_claude(path: &Path, mtime: SystemTime) -> Option<Session> {
         cwd: cwd?,
         title: title.or(prompt).unwrap_or_else(|| "(no prompt)".into()),
         mtime,
+        size: 0,
     })
 }
 
@@ -231,6 +234,7 @@ fn parse_codex(
         cwd: cwd?,
         title,
         mtime,
+        size: 0,
     })
 }
 
@@ -259,6 +263,7 @@ fn parse_pi(path: &Path, mtime: SystemTime) -> Option<Session> {
         cwd: cwd?,
         title: prompt.unwrap_or_else(|| "(no prompt)".into()),
         mtime,
+        size: 0,
     })
 }
 
@@ -313,11 +318,13 @@ fn scan(home: &Path) -> Vec<Transcript> {
 }
 
 fn parse((agent, path, mtime): &Transcript, titles: &HashMap<String, String>) -> Option<Session> {
-    match agent {
+    let mut s = match agent {
         Agent::Claude => parse_claude(path, *mtime),
         Agent::Codex => parse_codex(path, *mtime, titles),
         Agent::Pi => parse_pi(path, *mtime),
-    }
+    }?;
+    s.size = fs::metadata(path).map_or(0, |m| m.len());
+    Some(s)
 }
 
 pub fn load_all(home: &Path) -> Vec<Session> {
@@ -624,6 +631,7 @@ mod tests {
             cwd: cwd.into(),
             title: String::new(),
             mtime: SystemTime::UNIX_EPOCH,
+            size: 0,
         }
     }
 
@@ -913,6 +921,10 @@ mod tests {
             sessions[0].mtime,
             SystemTime::UNIX_EPOCH + Duration::from_secs(300)
         );
+        for s in &sessions {
+            assert_eq!(s.size, fs::metadata(&s.path).unwrap().len(), "{}", s.id);
+            assert!(s.size > 0);
+        }
         fs::remove_dir_all(&home).unwrap();
     }
 

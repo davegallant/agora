@@ -54,6 +54,22 @@ fn age(t: SystemTime) -> String {
     }
 }
 
+/// A transcript size in at most five characters: `512B`, `240K`, `3.1M`.
+fn size(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "K", "M", "G"];
+    let mut n = bytes as f64;
+    let mut u = 0;
+    while n >= 1024.0 && u < UNITS.len() - 1 {
+        n /= 1024.0;
+        u += 1;
+    }
+    if u >= 2 && n < 10.0 {
+        format!("{n:.1}{}", UNITS[u])
+    } else {
+        format!("{}{}", n as u64, UNITS[u])
+    }
+}
+
 /// An open session with shells still running looks idle but isn't done.
 fn running_in_background(live: Option<&Live>) -> bool {
     live.is_some_and(|l| l.state == State::Open && l.shells > 0)
@@ -258,6 +274,7 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
                     Style::new().fg(t.subtle),
                 )),
                 Cell::from(Span::styled(s.title.clone(), title_style)),
+                Cell::from(Line::from(size(s.size)).right_aligned().fg(t.muted)),
                 Cell::from(Line::from(age(s.mtime)).right_aligned().fg(t.muted)),
             ])
         })
@@ -269,6 +286,7 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
             Constraint::Length(6),
             Constraint::Length(18),
             Constraint::Fill(1),
+            Constraint::Length(5),
             Constraint::Length(4),
         ],
     )
@@ -450,6 +468,7 @@ mod tests {
             cwd: "/w/proj".into(),
             title: "Fix the login bug".into(),
             mtime: SystemTime::now(),
+            size: 240 * 1024,
         }];
         let mut app = App::new(PathBuf::from("/nonexistent"), sessions);
         let mut term = Terminal::new(TestBackend::new(120, 20)).unwrap();
@@ -468,12 +487,13 @@ mod tests {
             "hi back",
             "enter open",
             "proj",
+            "240K",
         ] {
             assert!(screen.contains(want), "missing {want:?} in:\n{screen}");
         }
     }
 
-    use super::{age, badge};
+    use super::{age, badge, size};
     const T: &crate::theme::Theme = &crate::theme::THEMES[0];
     use crate::app::Follow;
     use crate::live::{Live, State};
@@ -487,6 +507,7 @@ mod tests {
             cwd: "/w/proj".into(),
             title: title.into(),
             mtime: SystemTime::now(),
+            size: 0,
         }
     }
 
@@ -527,6 +548,16 @@ mod tests {
             .collect();
         std::fs::write(&path, body).unwrap();
         path
+    }
+
+    #[test]
+    fn sizes() {
+        assert_eq!(size(0), "0B");
+        assert_eq!(size(512), "512B");
+        assert_eq!(size(240 * 1024), "240K");
+        assert_eq!(size(3_250_000), "3.1M");
+        assert_eq!(size(12 * 1024 * 1024), "12M");
+        assert_eq!(size(1_300_000_000), "1.2G");
     }
 
     #[test]

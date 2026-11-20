@@ -674,6 +674,7 @@ mod tests {
             cwd: "/w/proj".into(),
             title: title.into(),
             mtime: SystemTime::now() - Duration::from_secs(age_secs),
+            size: 0,
         }
     }
 

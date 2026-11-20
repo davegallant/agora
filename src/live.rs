@@ -222,6 +222,7 @@ mod tests {
             cwd: cwd.into(),
             title: title.into(),
             mtime: SystemTime::UNIX_EPOCH,
+            size: 0,
         }
     }
 
