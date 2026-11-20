@@ -17,7 +17,8 @@ now, and everything you can resume, across **Claude Code**, **Codex** and **pi**
 - **Git context**: `±` marks a session whose folder has uncommitted changes,
   and the preview shows its branch and how far it is ahead of or behind.
 - **Enter** attaches to a running background Claude agent, or resumes the
-  session here in its own directory.
+  session here in its own directory. When you quit the agent, agora comes back
+  where you left it.
 
 It works in any terminal, with no tmux. Live state comes from
 `claude agents --json`, which covers running Claude sessions, interactive and

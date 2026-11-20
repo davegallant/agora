@@ -2,6 +2,7 @@
 
 mod app;
 mod channels;
+mod child;
 mod clipboard;
 mod ghostty;
 mod git;
@@ -14,12 +15,10 @@ mod state;
 mod theme;
 mod ui;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use ratatui::crossterm::execute;
-use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
-use std::process::Command;
 
 fn main() -> Result<()> {
     if let Some(arg) = std::env::args().nth(1) {
@@ -112,22 +111,25 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let mut terminal = ratatui::init();
-    // Mouse capture lets the wheel scroll the panes; shift-drag still selects text.
-    let _ = execute!(std::io::stdout(), EnableMouseCapture);
-    let result = app::App::new(home, sessions).run(&mut terminal);
-    let _ = execute!(std::io::stdout(), DisableMouseCapture);
-    ratatui::restore();
+    // Resuming runs the agent in the foreground; when it exits, agora comes
+    // back where it was.
+    let mut app = app::App::new(home, sessions);
+    loop {
+        let mut terminal = ratatui::init();
+        // Mouse capture lets the wheel scroll the panes; shift-drag still selects text.
+        let _ = execute!(std::io::stdout(), EnableMouseCapture);
+        let result = app.run(&mut terminal);
+        let _ = execute!(std::io::stdout(), DisableMouseCapture);
+        ratatui::restore();
 
-    match result? {
-        app::Exit::Quit => Ok(()),
-        app::Exit::Exec { cwd, argv } => {
-            let mut cmd = Command::new(&argv[0]);
-            cmd.args(&argv[1..]);
-            if let Some(dir) = cwd {
-                cmd.current_dir(&dir).env("PWD", &dir);
-            }
-            Err(anyhow!("could not run {}: {}", argv[0], cmd.exec()))
-        }
+        let (cwd, argv) = match result? {
+            app::Exit::Quit => return Ok(()),
+            app::Exit::Exec { cwd, argv } => (cwd, argv),
+        };
+        app.status = match child::run(cwd.as_deref(), &argv) {
+            Ok(st) if st.success() => None,
+            Ok(st) => Some(format!("{} exited ({st})", argv[0])),
+            Err(e) => Some(format!("could not run {}: {e}", argv[0])),
+        };
     }
 }

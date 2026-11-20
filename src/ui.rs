@@ -15,7 +15,7 @@ use std::time::SystemTime;
 
 /// Every key, for the `?` overlay and `--help`.
 pub const KEYS: &[(&str, &str)] = &[
-    ("enter", "jump to the session's tab, or resume it here"),
+    ("enter", "jump to its tab, or resume it here (agora returns after)"),
     ("t", "resume or attach in a new Ghostty tab"),
     (
         "v",

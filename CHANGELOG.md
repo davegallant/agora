@@ -35,6 +35,9 @@ All notable changes to agora. The format follows
 
 ### Changed
 
+- Quitting a session you resumed or attached with `enter` brings agora back,
+  on the same row with the same search, instead of leaving you at the shell.
+  A non-zero exit shows in the status line.
 - With live-only on and nothing live, the list says `l` shows everything.
 - The footer shows only the main keys; the rest are behind `?`.
 - Conversation search matches the whole query as one phrase: `redis cache`

@@ -612,9 +612,9 @@ impl App {
         self.live.len()
     }
 
-    pub fn run(mut self, terminal: &mut DefaultTerminal) -> Result<Exit> {
+    pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<Exit> {
         loop {
-            terminal.draw(|f| crate::ui::draw(f, &mut self))?;
+            terminal.draw(|f| crate::ui::draw(f, self))?;
             let mut latest = None;
             while let Ok(s) = self.rx.try_recv() {
                 latest = Some(s);

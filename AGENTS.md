@@ -45,6 +45,9 @@ detached `tmux` session and read the screen with `tmux capture-pane`.
 - **The full view (`v`) has its own search.** `/` there searches only that
   transcript and starts fresh; it never touches the list filter, which could
   filter away the session being read.
+- **Resuming returns to agora.** `enter` tears the TUI down, runs the agent
+  as a child (`child::run`) and redraws when it exits. agora ignores SIGINT and
+  SIGQUIT only while it waits, and the child gets them back in `pre_exec`.
 - **Tests** pass a `tmpdir` as `home`, so they never touch the real `$HOME`.
   The clipboard is a thread-local slot under `cfg(test)`, read with
   `clipboard::last()`.
