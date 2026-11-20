@@ -4,6 +4,7 @@ mod app;
 mod channels;
 mod clipboard;
 mod ghostty;
+mod git;
 mod live;
 mod pins;
 mod preview;

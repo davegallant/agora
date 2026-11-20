@@ -275,10 +275,16 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
                     s.agent.name(),
                     Style::new().fg(agent_color(t, s.agent)),
                 )),
-                Cell::from(Span::styled(
-                    s.project().to_string(),
-                    Style::new().fg(t.subtle),
-                )),
+                Cell::from(Line::from(match app.git.get(&s.cwd) {
+                    Some(g) if g.dirty > 0 => vec![
+                        Span::styled(s.project().to_string(), Style::new().fg(t.subtle)),
+                        Span::styled(" ±", Style::new().fg(t.accent)),
+                    ],
+                    _ => vec![Span::styled(
+                        s.project().to_string(),
+                        Style::new().fg(t.subtle),
+                    )],
+                })),
                 Cell::from(Line::from(if app.is_pinned(i) {
                     vec![
                         Span::styled("★ ", Style::new().fg(t.accent)),
@@ -333,6 +339,25 @@ fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
             ),
         ]),
     ];
+    if let Some(g) = app.git.get(&s.cwd) {
+        let mut spans = vec![Span::styled(
+            format!("⎇ {}", g.branch),
+            Style::new().fg(t.subtle),
+        )];
+        if g.dirty > 0 {
+            spans.push(Span::styled(
+                format!(" · {} uncommitted", g.dirty),
+                Style::new().fg(t.accent),
+            ));
+        }
+        if g.ahead > 0 || g.behind > 0 {
+            spans.push(Span::styled(
+                format!(" · ↑{} ↓{}", g.ahead, g.behind),
+                Style::new().fg(t.subtle),
+            ));
+        }
+        header.push(Line::from(spans));
+    }
     let action = match &live {
         Some(l) if l.term.is_some() => "enter: jump to its tab",
         Some(l) if l.background.is_some() => "enter: attach (background) · t: attach in new tab",

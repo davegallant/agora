@@ -15,6 +15,10 @@ All notable changes to agora. The format follows
 - `p` pins a session so it sits just under the live ones, with `★` before
   its title and "pinned" in the preview; pins are kept in
   `~/.config/agora/pins`.
+- Git context: a `±` after the project marks a folder with uncommitted
+  changes, and the preview shows its branch, how many files are uncommitted,
+  and how far it is ahead of or behind its remote. Checked in the background
+  every 15 seconds for the 100 most recently used folders.
 - `◐` marks a Claude session that has finished its turn but still has shells
   running in the background, and the preview says how many.
 - Themes: `T` opens a picker that previews each theme as you move through it;

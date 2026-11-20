@@ -14,6 +14,8 @@ now, and everything you can resume, across **Claude Code**, **Codex** and **pi**
   conversation text itself a moment later, with the matching passage shown in
   the preview. Every word must match; tool output and file contents don't count.
 - **Preview** of the end of the conversation for the selected session.
+- **Git context**: `±` marks a session whose folder has uncommitted changes,
+  and the preview shows its branch and how far it is ahead of or behind.
 - **Enter** attaches to a running background Claude agent, or resumes the
   session here in its own directory.
 

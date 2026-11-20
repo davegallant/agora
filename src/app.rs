@@ -1,5 +1,6 @@
 use crate::channels::Channels;
 use crate::ghostty;
+use crate::git::{self, Git};
 use crate::live::{self, Live, Snapshot, State};
 use crate::pins::Pins;
 use crate::preview::{self, Rendered};
@@ -73,6 +74,10 @@ pub struct App {
     pub live_only: bool,
     pub sort: Sort,
     pub pins: Pins,
+    /// Git context by folder, refreshed in the background.
+    pub git: HashMap<String, Git>,
+    git_wanted: git::Wanted,
+    git_rx: Receiver<(String, Option<Git>)>,
     /// The view as last saved, so only real changes are written.
     saved_view: ViewState,
     pub status: Option<String>,
@@ -134,6 +139,8 @@ impl App {
         let theme = theme::load(&home);
         let files = files_of(&sessions);
         let watch = sessions::spawn_watcher(home.clone(), Duration::from_secs(2));
+        let git_wanted = git::Wanted::default();
+        let git_rx = git::spawn_poller(git_wanted.clone(), Duration::from_secs(15));
         let mut app = App {
             home,
             sessions,
@@ -151,6 +158,9 @@ impl App {
             live_only: false,
             sort: Sort::default(),
             pins: Pins::default(),
+            git: HashMap::new(),
+            git_wanted,
+            git_rx,
             saved_view: ViewState::default(),
             status: None,
             previews: HashMap::new(),
@@ -223,6 +233,21 @@ impl App {
 
     /// Recompute every session's channel and search text.
     fn index_sessions(&mut self) {
+        // Git context for the most recently used folders.
+        let mut recent: Vec<&Session> = self.sessions.iter().collect();
+        recent.sort_by_key(|s| Reverse(s.mtime));
+        let mut dirs: Vec<String> = Vec::new();
+        for s in recent {
+            if !dirs.contains(&s.cwd) {
+                dirs.push(s.cwd.clone());
+            }
+            if dirs.len() == 100 {
+                break;
+            }
+        }
+        if let Ok(mut w) = self.git_wanted.lock() {
+            *w = dirs;
+        }
         self.channel_of = self
             .sessions
             .iter()
@@ -518,6 +543,12 @@ impl App {
             }
             while let Ok(c) = self.watch.try_recv() {
                 self.merge(c);
+            }
+            while let Ok((dir, g)) = self.git_rx.try_recv() {
+                match g {
+                    Some(g) => self.git.insert(dir, g),
+                    None => self.git.remove(&dir),
+                };
             }
             self.poll_search();
             // Redraw faster while the spinner is animating.
