@@ -16,8 +16,8 @@ ignored, so stage explicit paths.
 
 ## Checking a change
 
-`nix develop` provides the toolchain. Run `cargo test` and
-`cargo clippy --all-targets`, then `demo/try.sh` to drive the TUI against
+`nix develop` provides the toolchain. Run `cargo fmt --check`, `cargo test`
+and `cargo clippy --all-targets -- -D warnings` (what CI runs), then `demo/try.sh` to drive the TUI against
 made-up sessions in a throwaway `$HOME`. To script it, run `demo/try.sh` in a
 detached `tmux` session and read the screen with `tmux capture-pane`.
 
