@@ -29,6 +29,7 @@ pub const KEYS: &[(&str, &str)] = &[
     ("tab", "cycle agent: all, claude, codex, pi"),
     ("l", "live sessions only"),
     ("s", "sort by recent, project or size"),
+    ("p", "pin / unpin: pinned sessions sit under the live ones"),
     ("T", "choose a theme"),
     ("r", "reload every session from disk"),
     ("?", "show these keys"),
@@ -77,7 +78,7 @@ fn running_in_background(live: Option<&Live>) -> bool {
     live.is_some_and(|l| l.state == State::Open && l.shells > 0)
 }
 
-fn badge(t: &Theme, live: Option<&Live>) -> Span<'static> {
+fn badge(t: &Theme, live: Option<&Live>, pinned: bool) -> Span<'static> {
     if running_in_background(live) {
         return Span::styled(" ◐ ", Style::new().fg(t.open));
     }
@@ -87,6 +88,7 @@ fn badge(t: &Theme, live: Option<&Live>) -> Span<'static> {
         }
         Some(State::Busy) => Span::styled(" ● ", Style::new().fg(t.busy)),
         Some(State::Open) => Span::styled(" ○ ", Style::new().fg(t.open)),
+        None if pinned => Span::styled(" ★ ", Style::new().fg(t.accent)),
         None => Span::raw("   "),
     }
 }
@@ -269,7 +271,7 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
                 Style::new()
             };
             Row::new(vec![
-                Cell::from(badge(t, live)),
+                Cell::from(badge(t, live, app.is_pinned(i))),
                 Cell::from(Span::styled(
                     s.agent.name(),
                     Style::new().fg(agent_color(t, s.agent)),
@@ -590,14 +592,16 @@ mod tests {
             background: None,
             shells,
         };
-        assert_eq!(badge(T, Some(&l(State::NeedsYou, 0))).content, " ! ");
-        assert_eq!(badge(T, Some(&l(State::Busy, 0))).content, " ● ");
-        assert_eq!(badge(T, Some(&l(State::Open, 0))).content, " ○ ");
-        assert_eq!(badge(T, Some(&l(State::Open, 1))).content, " ◐ ");
+        assert_eq!(badge(T, Some(&l(State::NeedsYou, 0)), false).content, " ! ");
+        assert_eq!(badge(T, Some(&l(State::Busy, 0)), false).content, " ● ");
+        assert_eq!(badge(T, Some(&l(State::Open, 0)), false).content, " ○ ");
+        assert_eq!(badge(T, Some(&l(State::Open, 1)), false).content, " ◐ ");
+        assert_eq!(badge(T, None, true).content, " ★ ");
+        assert_eq!(badge(T, Some(&l(State::Busy, 0)), true).content, " ● ");
         // Busy and waiting sessions already show they aren't idle.
-        assert_eq!(badge(T, Some(&l(State::Busy, 1))).content, " ● ");
-        assert_eq!(badge(T, Some(&l(State::NeedsYou, 1))).content, " ! ");
-        assert_eq!(badge(T, None).content, "   ");
+        assert_eq!(badge(T, Some(&l(State::Busy, 1)), false).content, " ● ");
+        assert_eq!(badge(T, Some(&l(State::NeedsYou, 1)), false).content, " ! ");
+        assert_eq!(badge(T, None, false).content, "   ");
     }
 
     #[test]

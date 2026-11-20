@@ -5,6 +5,7 @@ mod channels;
 mod clipboard;
 mod ghostty;
 mod live;
+mod pins;
 mod preview;
 mod search;
 mod sessions;
@@ -40,7 +41,8 @@ fn main() -> Result<()> {
             }
             println!(
                 "\nchannels are set in ~/.config/agora/channels; the theme is kept in\n\
-                 ~/.config/agora/theme and the last view in ~/.config/agora/state."
+                 ~/.config/agora/theme, the last view in ~/.config/agora/state and pins in\n\
+                 ~/.config/agora/pins."
             );
             return Ok(());
         }

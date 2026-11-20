@@ -52,6 +52,7 @@ Other terminals don't have these yet.
 | `tab` | cycle agent: all, claude, codex, pi |
 | `l` | live sessions only |
 | `s` | sort by recent, project or size; live sessions stay on top |
+| `p` | pin / unpin: pinned sessions sit just under the live ones, marked `★` |
 | `j` `k` `↑` `↓` `g` `G` | move |
 | `T` | choose a theme: `j`/`k` try one, `enter` keeps it, `esc` cancels |
 | `r` | reload every session from disk |
@@ -59,7 +60,8 @@ Other terminals don't have these yet.
 | `q` | quit |
 
 agora reopens with the channel, agent, live-only and sort you left it with
-(`~/.config/agora/state`).
+(`~/.config/agora/state`). Pins are kept in `~/.config/agora/pins`, one
+`<agent> <id>` per line.
 
 Themes: `terminal` (your terminal's own colors), `tokyo-night`, `monokai`,
 `catppuccin-mocha`, `dracula`, `gruvbox-dark` and `nord`. The choice is saved in

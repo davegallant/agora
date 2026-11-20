@@ -1,6 +1,7 @@
 use crate::channels::Channels;
 use crate::ghostty;
 use crate::live::{self, Live, Snapshot, State};
+use crate::pins::Pins;
 use crate::preview::{self, Rendered};
 use crate::search::{self, Files, Searcher};
 use crate::sessions::{self, Agent, Changes, Msg, Session};
@@ -71,6 +72,7 @@ pub struct App {
     pub agent_filter: Option<Agent>,
     pub live_only: bool,
     pub sort: Sort,
+    pub pins: Pins,
     /// The view as last saved, so only real changes are written.
     saved_view: ViewState,
     pub status: Option<String>,
@@ -148,6 +150,7 @@ impl App {
             agent_filter: None,
             live_only: false,
             sort: Sort::default(),
+            pins: Pins::default(),
             saved_view: ViewState::default(),
             status: None,
             previews: HashMap::new(),
@@ -180,6 +183,7 @@ impl App {
             showing_keys: false,
         };
         app.index_sessions();
+        app.pins = Pins::load(&app.home);
         let mut v = state::load(&app.home);
         if v.channel
             .as_ref()
@@ -275,12 +279,32 @@ impl App {
             .and_then(|i| self.view.get(i).copied())
     }
 
+    pub fn is_pinned(&self, i: usize) -> bool {
+        let s = &self.sessions[i];
+        self.pins.contains(s.agent, &s.id)
+    }
+
+    /// Needs you, then live, then pinned, then the rest.
     fn rank(&self, i: usize) -> u8 {
         match self.live.get(&i).map(|l| l.state) {
             Some(State::NeedsYou) => 0,
             Some(_) => 1,
-            None => 2,
+            None if self.is_pinned(i) => 2,
+            None => 3,
         }
+    }
+
+    fn toggle_pin(&mut self) {
+        let Some(i) = self.selected() else { return };
+        let s = &self.sessions[i];
+        let pinned = self.pins.toggle(s.agent, &s.id);
+        let title = s.title.clone();
+        self.status = Some(match self.pins.save(&self.home) {
+            Ok(()) if pinned => format!("pinned “{title}”"),
+            Ok(()) => format!("unpinned “{title}”"),
+            Err(e) => format!("could not save pins: {e}"),
+        });
+        self.rebuild_view();
     }
 
     pub fn rebuild_view(&mut self) {
@@ -621,6 +645,7 @@ impl App {
             KeyCode::Char('t') => self.open_in_new_tab(),
             KeyCode::Char('y') => self.copy(false),
             KeyCode::Char('Y') => self.copy(true),
+            KeyCode::Char('p') => self.toggle_pin(),
             KeyCode::Char('T') => self.picking_theme = Some(self.theme),
             KeyCode::Char('?') => self.showing_keys = true,
             _ => {}
@@ -1558,6 +1583,34 @@ mod tests {
         press(&mut a, KeyCode::Char('j'));
         press(&mut a, KeyCode::Char('J'));
         assert!(!home.join(".config/agora/state").exists());
+        fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn p_pins_under_live_and_above_the_rest() {
+        let home = tmpdir("pins");
+        let mut a = App::new(
+            home.clone(),
+            (0..4)
+                .map(|n| session(&format!("s{n}"), &format!("T{n}"), n * 10))
+                .collect(),
+        );
+        a.live.insert(0, live(State::Busy));
+        a.rebuild_view();
+        a.table.select(Some(3));
+        press(&mut a, KeyCode::Char('p'));
+        assert_eq!(titles(&a), ["T0", "T3", "T1", "T2"]);
+        assert_eq!(
+            a.selected(),
+            Some(3),
+            "selection follows the pinned session"
+        );
+        assert!(a.status.as_deref().unwrap().starts_with("pinned"));
+        let b = App::new(home.clone(), Vec::new());
+        assert!(b.pins.contains(Agent::Claude, "s3"), "kept across runs");
+        press(&mut a, KeyCode::Char('p'));
+        assert_eq!(titles(&a), ["T0", "T1", "T2", "T3"]);
+        assert!(a.status.as_deref().unwrap().starts_with("unpinned"));
         fs::remove_dir_all(&home).unwrap();
     }
 
