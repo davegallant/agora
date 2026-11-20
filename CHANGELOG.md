@@ -9,6 +9,7 @@ All notable changes to agora. The format follows
 ### Added
 
 - The list shows each transcript's size beside its age.
+- `y` copies the selected session's resume command and `Y` its project path.
 - `◐` marks a Claude session that has finished its turn but still has shells
   running in the background, and the preview says how many.
 - Themes: `T` opens a picker that previews each theme as you move through it;

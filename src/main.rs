@@ -2,6 +2,7 @@
 
 mod app;
 mod channels;
+mod clipboard;
 mod ghostty;
 mod live;
 mod preview;

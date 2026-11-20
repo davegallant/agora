@@ -564,6 +564,8 @@ impl App {
             KeyCode::Char('N') => self.jump_match(-1),
             KeyCode::Enter => return self.open(),
             KeyCode::Char('t') => self.open_in_new_tab(),
+            KeyCode::Char('y') => self.copy(false),
+            KeyCode::Char('Y') => self.copy(true),
             KeyCode::Char('T') => self.picking_theme = Some(self.theme),
             KeyCode::Char('?') => self.showing_keys = true,
             _ => {}
@@ -640,6 +642,28 @@ impl App {
             cwd: Some(s.cwd.clone()),
             argv: s.resume_argv(),
         })
+    }
+
+    /// Copy the selected session's resume command, or with `path` its folder.
+    fn copy(&mut self, path: bool) {
+        let Some(i) = self.selected() else { return };
+        let s = &self.sessions[i];
+        let text = if path {
+            s.cwd.clone()
+        } else if let Some(id) = self.live.get(&i).and_then(|l| l.background.clone()) {
+            format!("claude attach {}", ghostty::shell_quote(&id))
+        } else {
+            let argv: Vec<String> = s
+                .resume_argv()
+                .iter()
+                .map(|a| ghostty::shell_quote(a))
+                .collect();
+            format!("cd {} && {}", ghostty::shell_quote(&s.cwd), argv.join(" "))
+        };
+        self.status = Some(match crate::clipboard::copy(&text) {
+            Ok(()) => format!("copied “{text}”"),
+            Err(e) => format!("could not copy: {e}"),
+        });
     }
 
     fn open_in_new_tab(&mut self) {
@@ -1390,6 +1414,44 @@ mod tests {
         }
         assert_eq!(a.theme().name, THEMES[THEMES.len() - 1].name);
         fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn y_copies_the_resume_command_and_shift_y_the_path() {
+        let mut a = app(vec![with(Agent::Claude, "abc", "Alpha", "/w/my proj", 0)]);
+        press(&mut a, KeyCode::Char('y'));
+        assert_eq!(
+            crate::clipboard::last().as_deref(),
+            Some("cd '/w/my proj' && claude --resume abc")
+        );
+        assert!(a.status.as_deref().unwrap().starts_with("copied"));
+        press(&mut a, KeyCode::Char('Y'));
+        assert_eq!(crate::clipboard::last().as_deref(), Some("/w/my proj"));
+    }
+
+    #[test]
+    fn y_copies_attach_for_a_background_agent() {
+        let mut a = app(vec![session("abc", "Alpha", 0)]);
+        a.live.insert(
+            0,
+            Live {
+                background: Some("bg1".into()),
+                ..live(State::Busy)
+            },
+        );
+        press(&mut a, KeyCode::Char('y'));
+        assert_eq!(
+            crate::clipboard::last().as_deref(),
+            Some("claude attach bg1")
+        );
+    }
+
+    #[test]
+    fn y_on_an_empty_list_does_nothing() {
+        let mut a = app(Vec::new());
+        crate::clipboard::copy("before").unwrap();
+        assert!(press(&mut a, KeyCode::Char('y')).is_none());
+        assert_eq!(crate::clipboard::last().as_deref(), Some("before"));
     }
 
     #[test]

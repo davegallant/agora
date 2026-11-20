@@ -46,6 +46,7 @@ Other terminals don't have these yet.
 | --- | --- |
 | `enter` | attach / resume here (jump to tab in Ghostty) |
 | `t` | resume (or attach) in a new tab (Ghostty only) |
+| `y` `Y` | copy the resume command / the project path |
 | `/` | search titles and conversation text; `esc` clears |
 | `c` `C` | next / previous channel; back to all after the last |
 | `tab` | cycle agent: all, claude, codex, pi |

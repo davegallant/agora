@@ -17,6 +17,7 @@ use std::time::SystemTime;
 pub const KEYS: &[(&str, &str)] = &[
     ("enter", "jump to the session's tab, or resume it here"),
     ("t", "resume or attach in a new Ghostty tab"),
+    ("y Y", "copy the resume command / the project path"),
     ("/", "search titles and conversation text; esc clears"),
     ("n N", "next / previous match in the preview"),
     ("J K", "scroll the preview (ctrl-f / ctrl-b by page)"),
