@@ -6,6 +6,12 @@ All notable changes to agora. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- The saved view and pins move to `~/.local/state/agora/` (or
+  `$XDG_STATE_HOME/agora/`), out of the settings folder; existing files move
+  there on first use. Settings follow `$XDG_CONFIG_HOME` when it is set.
+
 ## [0.5.0] - 2026-11-20
 
 ### Added

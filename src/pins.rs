@@ -1,5 +1,5 @@
 //! Pinned sessions, kept one per line as `<agent> <id>` in
-//! `~/.config/agora/pins`. Blank lines, `#` comments and unknown agents are
+//! `~/.local/state/agora/pins`. Blank lines, `#` comments and unknown agents are
 //! skipped.
 
 use crate::sessions::Agent;
@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 pub struct Pins(BTreeSet<(&'static str, String)>);
 
 fn path(home: &Path) -> PathBuf {
-    home.join(".config/agora/pins")
+    crate::paths::state(home, "pins")
 }
 
 impl Pins {

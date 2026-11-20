@@ -42,4 +42,4 @@ path.parent.mkdir(parents=True, exist_ok=True)
 path.write_text("".join(json.dumps(r) + "\n" for r in rows))
 EOF
 
-HOME=$home PATH="$PWD/demo/bin:$PATH" "$bin" "$@"
+env -u XDG_CONFIG_HOME -u XDG_STATE_HOME HOME="$home" PATH="$PWD/demo/bin:$PATH" "$bin" "$@"

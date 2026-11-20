@@ -156,7 +156,7 @@ pub fn find(name: &str) -> Option<usize> {
 }
 
 fn path(home: &Path) -> PathBuf {
-    home.join(".config/agora/theme")
+    crate::paths::config(home, "theme")
 }
 
 /// The saved theme; a missing, unreadable or unknown one means `terminal`.

@@ -7,6 +7,7 @@ mod clipboard;
 mod ghostty;
 mod git;
 mod live;
+mod paths;
 mod pins;
 mod preview;
 mod search;
@@ -40,9 +41,8 @@ fn main() -> Result<()> {
                 println!("  {key:<8} {what}");
             }
             println!(
-                "\nchannels are set in ~/.config/agora/channels; the theme is kept in\n\
-                 ~/.config/agora/theme, the last view in ~/.config/agora/state and pins in\n\
-                 ~/.config/agora/pins."
+                "\nchannels and theme are kept in ~/.config/agora/ ($XDG_CONFIG_HOME);\n\
+                 the last view and pins in ~/.local/state/agora/ ($XDG_STATE_HOME)."
             );
             return Ok(());
         }

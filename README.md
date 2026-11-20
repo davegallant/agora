@@ -63,9 +63,12 @@ Other terminals don't have these yet.
 | `?` | show every key |
 | `q` | quit |
 
-agora reopens with the channel, agent, live-only and sort you left it with
-(`~/.config/agora/state`). Pins are kept in `~/.config/agora/pins`, one
-`<agent> <id>` per line.
+agora reopens with the channel, agent, live-only and sort you left it with.
+That view and your pins (one `<agent> <id>` per line) are kept in
+`~/.local/state/agora/` (or `$XDG_STATE_HOME/agora/`); settings you edit, like
+`channels` and `theme`, live in `~/.config/agora/` (or `$XDG_CONFIG_HOME/agora/`).
+Older agora versions kept `state` and `pins` in `~/.config/agora/`; they move on
+first use.
 
 Themes: `terminal` (your terminal's own colors), `tokyo-night`, `monokai`,
 `catppuccin-mocha`, `dracula`, `gruvbox-dark` and `nord`. The choice is saved in

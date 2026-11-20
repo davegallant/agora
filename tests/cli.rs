@@ -104,6 +104,8 @@ fn agora(home: &Home, args: &[&str]) -> Output {
     let out = Command::new(env!("CARGO_BIN_EXE_agora"))
         .args(args)
         .env("HOME", &home.dir)
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("XDG_STATE_HOME")
         .env("PATH", path)
         .output()
         .unwrap();

@@ -51,7 +51,7 @@ fn glob(pat: &str, text: &str) -> bool {
 impl Channels {
     /// Read the rules file under `home`; a missing or unreadable file means no rules.
     pub fn load(home: &Path) -> Self {
-        let path = home.join(".config/agora/channels");
+        let path = crate::paths::config(home, "channels");
         fs::read_to_string(path)
             .map(|text| Self::parse(&text, home))
             .unwrap_or_default()

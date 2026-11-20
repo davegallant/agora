@@ -34,8 +34,11 @@ detached `tmux` session and read the screen with `tmux capture-pane`.
 - **Read transcripts cheaply.** Listing reads only each file's head and tail;
   sizes come from file metadata. Only the full view (`v`) and conversation
   search read whole files.
-- **Config files** live in `~/.config/agora/` (`channels`, `theme`, `state`,
-  `pins`), one small hand-editable text file each. Loading falls back field by
+- **Files** go through `paths.rs`: settings you edit (`channels`, `theme`) in
+  the XDG config folder, state agora writes (`state`, `pins`) in the XDG state
+  folder; one small hand-editable text file each. Tests ignore the XDG
+  variables, and anything that runs the binary in a throwaway `$HOME` must
+  clear them. Loading falls back field by
   field on missing or bad values. A failed write shows in the status line and
   never stops the app. `pins` is re-read before each change and replaced by
   rename, because several agora windows can share it.

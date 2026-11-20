@@ -1,4 +1,4 @@
-//! The view agora reopens with, kept in `~/.config/agora/state` as
+//! The view agora reopens with, kept in `~/.local/state/agora/state` as
 //! `key = value` lines: `channel`, `agent`, `live` and `sort`. Unknown keys and
 //! bad values are ignored, so each field falls back to its default on its own.
 
@@ -16,7 +16,7 @@ pub struct ViewState {
 }
 
 fn path(home: &Path) -> PathBuf {
-    home.join(".config/agora/state")
+    crate::paths::state(home, "state")
 }
 
 pub fn load(home: &Path) -> ViewState {
@@ -118,9 +118,9 @@ mod tests {
     fn bad_or_missing_lines_fall_back_field_by_field() {
         let h = home("bad");
         assert_eq!(load(&h), ViewState::default(), "no file yet");
-        fs::create_dir_all(h.join(".config/agora")).unwrap();
+        fs::create_dir_all(h.join(".local/state/agora")).unwrap();
         fs::write(
-            h.join(".config/agora/state"),
+            h.join(".local/state/agora/state"),
             "agent = nope\nlive = true\ngarbage\nsort = size\nchannel =   \n",
         )
         .unwrap();
