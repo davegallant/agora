@@ -143,6 +143,12 @@ fn haystack(s: &Session, channel: &str) -> String {
     .to_lowercase()
 }
 
+/// Is `name` a program on `$PATH`?
+fn on_path(name: &str) -> bool {
+    std::env::var_os("PATH")
+        .is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(name).is_file()))
+}
+
 /// What the status line says after a copy.
 fn copied_status(text: &str, via: crate::clipboard::Via) -> String {
     match via {
@@ -765,6 +771,7 @@ impl App {
             KeyCode::Char('Y') => self.copy(true),
             KeyCode::Char('p') => self.toggle_pin(),
             KeyCode::Char('v') => self.open_reading(),
+            KeyCode::Char('d') => return self.diff(),
             KeyCode::Char('T') => self.picking_theme = Some(self.theme),
             KeyCode::Char('?') => self.showing_keys = true,
             _ => {}
@@ -864,6 +871,24 @@ impl App {
             Ok(via) => copied_status(&text, via),
             Err(e) => format!("could not copy: {e}"),
         });
+    }
+
+    /// Review the selected session's folder: `hunk diff --watch`, else `git diff`.
+    fn diff(&mut self) -> Option<Exit> {
+        let cwd = self.sessions[self.selected()?].cwd.clone();
+        if !Path::new(&cwd).is_dir() {
+            self.status = Some(format!("{cwd} no longer exists"));
+            return None;
+        }
+        let argv: &[&str] = if on_path("hunk") {
+            &["hunk", "diff", "--watch"]
+        } else {
+            &["git", "diff"]
+        };
+        Some(Exit::Exec {
+            cwd: Some(cwd),
+            argv: argv.iter().map(|a| a.to_string()).collect(),
+        })
     }
 
     fn open_in_new_tab(&mut self) {
@@ -1706,7 +1731,7 @@ mod tests {
         let mut a = App::new(home.clone(), vec![session("a", "A", 0)]);
         press(&mut a, KeyCode::Char('j'));
         press(&mut a, KeyCode::Char('J'));
-        assert!(!home.join(".config/agora/state").exists());
+        assert!(!home.join(".local/state/agora/state").exists());
         fs::remove_dir_all(&home).unwrap();
     }
 
@@ -1856,6 +1881,40 @@ mod tests {
         press(&mut a, KeyCode::Char('G'));
         assert_eq!(a.pane.follow, Follow::Bottom);
         assert_eq!(a.selected(), Some(0), "the list doesn't move");
+    }
+
+    #[test]
+    fn d_reviews_the_session_folder_in_hunk_or_git() {
+        let dir = tmpdir("diff");
+        let mut a = app(vec![with(
+            Agent::Claude,
+            "a",
+            "A",
+            dir.to_str().unwrap(),
+            0,
+        )]);
+        match press(&mut a, KeyCode::Char('d')) {
+            Some(Exit::Exec { cwd, argv }) => {
+                assert_eq!(cwd.as_deref(), dir.to_str());
+                let want = if on_path("hunk") {
+                    vec!["hunk", "diff", "--watch"]
+                } else {
+                    vec!["git", "diff"]
+                };
+                assert_eq!(argv, want);
+            }
+            _ => panic!("d runs a diff"),
+        }
+        let mut gone = app(vec![session("a", "A", 0)]);
+        assert!(press(&mut gone, KeyCode::Char('d')).is_none());
+        assert!(gone.status.as_deref().unwrap().contains("no longer exists"));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn on_path_finds_programs() {
+        assert!(on_path("sh"));
+        assert!(!on_path("no-such-program-for-agora"));
     }
 
     #[test]

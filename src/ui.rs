@@ -25,6 +25,7 @@ pub const KEYS: &[(&str, &str)] = &[
         "read the whole conversation full-screen; / searches it, esc closes",
     ),
     ("y Y", "copy the resume command / the project path"),
+    ("d", "review the folder's changes in hunk (or git diff)"),
     ("/", "search titles and conversation text; esc clears"),
     ("n N", "next / previous match in the preview"),
     ("J K", "scroll the preview (ctrl-f / ctrl-b by page)"),

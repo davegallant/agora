@@ -6,6 +6,11 @@ All notable changes to agora. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `d` reviews the selected session's folder in `hunk diff --watch`, or
+  `git diff` when hunk isn't installed, and returns to agora afterwards.
+
 ### Changed
 
 - The saved view and pins move to `~/.local/state/agora/` (or
