@@ -1,7 +1,7 @@
 use crate::channels::Channels;
 use crate::ghostty;
 use crate::git::{self, Git};
-use crate::live::{self, Live, Snapshot, State};
+use crate::live::{self, Focus, Live, Snapshot, State};
 use crate::pins::Pins;
 use crate::preview::{self, Rendered};
 use crate::search::{self, Files, Searcher};
@@ -18,7 +18,8 @@ use ratatui::DefaultTerminal;
 use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::Receiver;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -62,6 +63,8 @@ pub struct PreviewPane {
     /// The top row and height last drawn, for relative scrolling.
     pub top: usize,
     pub height: usize,
+    /// The whole transcript is wanted and still loading; the tail shows meanwhile.
+    pub loading: bool,
 }
 
 pub struct App {
@@ -120,6 +123,54 @@ pub struct App {
     /// A selected session that a rebuild dropped from the view (a reload,
     /// say): selected again when it comes back, until the user moves.
     lost: Option<PathBuf>,
+    /// Whether agora's terminal has focus; pollers slow down without it.
+    pub focus: Focus,
+    /// Folders the git poller checks every round, as last sent.
+    git_hot: Vec<String>,
+    /// Whole transcripts load on this thread, off the UI thread.
+    loader: Sender<(usize, Session)>,
+    loaded: Receiver<Loaded>,
+    /// The whole transcript asked of the loader and not back yet.
+    loading: Option<(usize, PathBuf)>,
+    /// Sessions whose whole transcript is kept, oldest first.
+    full_kept: Vec<usize>,
+    /// While choosing a channel: the filter to go back to on esc.
+    pub picking_channel: Option<Option<String>>,
+    /// Sessions the search matches in channels other than the one shown.
+    pub elsewhere: usize,
+    /// Something on screen changed since the last draw.
+    redraw: bool,
+}
+
+/// Whole transcripts kept in memory at once; a long one can be tens of MB.
+const FULL_KEPT: usize = 3;
+
+/// Live state is polled this often while agora has focus, and less without.
+const LIVE_EVERY: (Duration, Duration) = (Duration::from_secs(2), Duration::from_secs(15));
+const GIT_EVERY: (Duration, Duration) = (Duration::from_secs(15), Duration::from_secs(120));
+
+/// With nothing changing, redraw this often anyway so ages stay current.
+const IDLE_REDRAW: Duration = Duration::from_secs(30);
+
+/// A whole transcript the loader read: (session index, its path, messages).
+type Loaded = (usize, PathBuf, Vec<Msg>);
+
+/// A thread that reads whole transcripts; only the newest request matters.
+fn spawn_loader() -> (Sender<(usize, Session)>, Receiver<Loaded>) {
+    let (tx, requests) = std::sync::mpsc::channel::<(usize, Session)>();
+    let (out, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        while let Ok(mut req) = requests.recv() {
+            while let Ok(newer) = requests.try_recv() {
+                req = newer;
+            }
+            let msgs = sessions::preview(&req.1, usize::MAX, true);
+            if out.send((req.0, req.1.path.clone(), msgs)).is_err() {
+                return;
+            }
+        }
+    });
+    (tx, rx)
 }
 
 /// Text search starts after this pause in typing, and only for longer queries.
@@ -169,8 +220,10 @@ impl App {
         let theme = theme::load(&home);
         let files = files_of(&sessions);
         let watch = sessions::spawn_watcher(home.clone(), Duration::from_secs(2));
+        let focus: Focus = Arc::new(AtomicBool::new(true));
         let git_wanted = git::Wanted::default();
-        let git_rx = git::spawn_poller(git_wanted.clone(), Duration::from_secs(15));
+        let git_rx = git::spawn_poller(git_wanted.clone(), focus.clone(), GIT_EVERY.0, GIT_EVERY.1);
+        let (loader, loaded) = spawn_loader();
         let mut app = App {
             home,
             sessions,
@@ -206,10 +259,11 @@ impl App {
                 current: None,
                 top: 0,
                 height: 0,
+                loading: false,
             },
             list_area: Rect::default(),
             preview_area: Rect::default(),
-            rx: live::spawn_poller(Duration::from_secs(2)),
+            rx: live::spawn_poller(focus.clone(), LIVE_EVERY.0, LIVE_EVERY.1),
             watch,
             searcher: Searcher::spawn(),
             files,
@@ -223,6 +277,15 @@ impl App {
             showing_keys: false,
             reading: None,
             lost: None,
+            focus,
+            git_hot: Vec::new(),
+            loader,
+            loaded,
+            loading: None,
+            full_kept: Vec::new(),
+            picking_channel: None,
+            elsewhere: 0,
+            redraw: true,
         };
         app.index_sessions();
         app.pins = Pins::load(&app.home);
@@ -278,8 +341,28 @@ impl App {
             }
         }
         if let Ok(mut w) = self.git_wanted.lock() {
-            *w = dirs;
+            w.all = dirs;
         }
+    }
+
+    /// Keep the git poller checking live sessions' folders and the shown one
+    /// every round; the rest it checks only now and then.
+    fn want_git_hot(&mut self) {
+        let mut hot: Vec<String> = self
+            .live
+            .keys()
+            .chain(self.shown().as_ref())
+            .filter_map(|&i| self.sessions.get(i).map(|s| s.dir.clone()))
+            .collect();
+        hot.sort();
+        hot.dedup();
+        if hot == self.git_hot {
+            return;
+        }
+        if let Ok(mut w) = self.git_wanted.lock() {
+            w.hot = hot.clone();
+        }
+        self.git_hot = hot;
     }
 
     /// Recompute every session's channel and search text.
@@ -319,6 +402,51 @@ impl App {
             .into_iter()
             .map(|(name, _)| name)
             .collect()
+    }
+
+    /// Every channel with its session count, after "all" (`None`), in the
+    /// order `c` steps through them.
+    pub fn channel_counts(&self) -> Vec<(Option<String>, usize)> {
+        let tagged = self
+            .channel_of
+            .iter()
+            .map(String::as_str)
+            .zip(self.sessions.iter().map(|s| s.mtime));
+        std::iter::once((None, self.sessions.len()))
+            .chain(
+                self.channels
+                    .ordered(tagged)
+                    .into_iter()
+                    .map(|(name, n)| (Some(name), n)),
+            )
+            .collect()
+    }
+
+    /// Keys while the channel picker is open: moving applies the channel,
+    /// enter keeps it, esc goes back to the one before.
+    fn on_channel_key(&mut self, k: KeyEvent, was: Option<String>) {
+        match k.code {
+            KeyCode::Char('j') | KeyCode::Down | KeyCode::Tab => self.cycle_channel(1),
+            KeyCode::Char('k') | KeyCode::Up | KeyCode::BackTab => self.cycle_channel(-1),
+            KeyCode::Char('g') | KeyCode::Home => {
+                self.channel_filter = None;
+                self.rebuild_view();
+            }
+            KeyCode::Char('G') | KeyCode::End => {
+                self.channel_filter = self.channel_list().pop();
+                self.rebuild_view();
+            }
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('#') => {
+                self.picking_channel = None;
+                self.channel_filter = was;
+                self.rebuild_view();
+            }
+            KeyCode::Enter => {
+                self.picking_channel = None;
+                self.save_view();
+            }
+            _ => {}
+        }
     }
 
     /// Step the channel filter: all, then each channel, then all again.
@@ -380,6 +508,21 @@ impl App {
         self.rebuild_view();
     }
 
+    /// Session `i` passes the agent, live-only and channel filters.
+    fn in_scope(&self, i: usize) -> bool {
+        self.in_scope_but_channel(i)
+            && self
+                .channel_filter
+                .as_ref()
+                .is_none_or(|c| *c == self.channel_of[i])
+    }
+
+    fn in_scope_but_channel(&self, i: usize) -> bool {
+        self.agent_filter
+            .is_none_or(|a| a == self.sessions[i].agent)
+            && (!self.live_only || self.live.contains_key(&i))
+    }
+
     pub fn rebuild_view(&mut self) {
         let keep = self.selected();
         let terms: Vec<String> = self
@@ -388,19 +531,20 @@ impl App {
             .split_whitespace()
             .map(String::from)
             .collect();
+        let matches = |i: usize| {
+            terms.iter().all(|t| self.haystacks[i].contains(t.as_str()))
+                || self.text_hits.contains_key(&i)
+        };
         let mut view: Vec<usize> = (0..self.sessions.len())
-            .filter(|&i| {
-                let s = &self.sessions[i];
-                self.agent_filter.is_none_or(|a| a == s.agent)
-                    && self
-                        .channel_filter
-                        .as_ref()
-                        .is_none_or(|c| *c == self.channel_of[i])
-                    && (!self.live_only || self.live.contains_key(&i))
-                    && (terms.iter().all(|t| self.haystacks[i].contains(t.as_str()))
-                        || self.text_hits.contains_key(&i))
-            })
+            .filter(|&i| self.in_scope(i) && matches(i))
             .collect();
+        // A search inside a channel says what it finds outside it.
+        self.elsewhere = match &self.channel_filter {
+            Some(c) if !terms.is_empty() => (0..self.sessions.len())
+                .filter(|&i| self.channel_of[i] != *c && self.in_scope_but_channel(i) && matches(i))
+                .count(),
+            _ => 0,
+        };
         // One key per session, so ranking and lowercasing run once each.
         view.sort_by_cached_key(|&i| {
             let s = &self.sessions[i];
@@ -444,6 +588,8 @@ impl App {
         self.index_sessions();
         self.files = files_of(&self.sessions);
         self.previews.clear();
+        self.full_kept.clear();
+        self.loading = None;
         self.pane.key = None;
         self.pane.session = None;
         self.filter_changed();
@@ -495,7 +641,7 @@ impl App {
                 }
             };
             self.previews.remove(&(i, false));
-            self.previews.remove(&(i, true));
+            self.refresh_full(i);
             if self.pane.session == Some(i) {
                 self.pane.key = None;
             }
@@ -516,7 +662,10 @@ impl App {
             self.pane.current = None;
             self.pane.follow = Follow::Bottom;
         }
-        let full = self.reading.is_some() || self.text_hits.contains_key(&i);
+        let want_full = self.reading.is_some() || self.text_hits.contains_key(&i);
+        // Until the whole transcript is in, the tail shows.
+        let full = want_full && self.full_ready(i);
+        self.pane.loading = want_full && !full;
         // Loading the whole transcript renumbers the matches: start again on
         // the most recent one.
         if self
@@ -532,9 +681,10 @@ impl App {
         let key = (i, width, query.clone(), self.pane.current, full, t);
         if self.pane.key.as_ref() != Some(&key) {
             let terms = search::terms(&query);
-            let msgs = self.previews.entry((i, full)).or_insert_with(|| {
-                sessions::preview(&self.sessions[i], if full { usize::MAX } else { 200 }, full)
-            });
+            let msgs = self
+                .previews
+                .entry((i, full))
+                .or_insert_with(|| sessions::preview(&self.sessions[i], 200, false));
             let mut r = preview::render(&THEMES[t], msgs, &terms, width, self.pane.current);
             // First sight of matches: start on the most recent one.
             if self.pane.current.is_none() && !r.matches.is_empty() {
@@ -547,6 +697,81 @@ impl App {
             self.pane.r = r;
         }
         &mut self.pane
+    }
+
+    /// Is session `i`'s whole transcript in? If not, ask the loader for it.
+    /// Tests load it on the spot, so they need not wait.
+    fn full_ready(&mut self, i: usize) -> bool {
+        if self.previews.contains_key(&(i, true)) {
+            return true;
+        }
+        if cfg!(test) {
+            let msgs = sessions::preview(&self.sessions[i], usize::MAX, true);
+            self.keep_full(i, msgs);
+            return true;
+        }
+        let path = &self.sessions[i].path;
+        if self
+            .loading
+            .as_ref()
+            .is_none_or(|(j, p)| *j != i || p != path)
+        {
+            self.request_full(i);
+        }
+        false
+    }
+
+    fn request_full(&mut self, i: usize) {
+        let s = self.sessions[i].clone();
+        self.loading = Some((i, s.path.clone()));
+        let _ = self.loader.send((i, s));
+    }
+
+    /// Keep session `i`'s whole transcript, dropping the oldest kept one
+    /// beyond `FULL_KEPT`.
+    fn keep_full(&mut self, i: usize, msgs: Vec<Msg>) {
+        self.previews.insert((i, true), msgs);
+        self.full_kept.retain(|&j| j != i);
+        self.full_kept.push(i);
+        while self.full_kept.len() > FULL_KEPT {
+            let old = self.full_kept.remove(0);
+            self.previews.remove(&(old, true));
+        }
+    }
+
+    /// Session `i` changed on disk. If its whole transcript is on screen, keep
+    /// showing it while the new one loads, so the reader's place holds;
+    /// otherwise forget it.
+    fn refresh_full(&mut self, i: usize) {
+        if self.loading.as_ref().is_some_and(|(j, _)| *j == i) {
+            self.loading = None;
+        }
+        let shown = self.pane.session == Some(i) && self.previews.contains_key(&(i, true));
+        if shown && !cfg!(test) {
+            self.request_full(i);
+        } else {
+            self.previews.remove(&(i, true));
+            self.full_kept.retain(|&j| j != i);
+        }
+    }
+
+    /// Take in whole transcripts the loader has read.
+    fn poll_loader(&mut self) {
+        while let Ok((i, path, msgs)) = self.loaded.try_recv() {
+            let wanted = self
+                .loading
+                .as_ref()
+                .is_some_and(|(j, p)| *j == i && *p == path);
+            if !wanted || self.sessions.get(i).is_none_or(|s| s.path != path) {
+                continue;
+            }
+            self.loading = None;
+            self.keep_full(i, msgs);
+            if self.pane.session == Some(i) {
+                self.pane.key = None;
+            }
+            self.redraw = true;
+        }
     }
 
     /// What the preview highlights: the full view's own search, else the list's.
@@ -675,28 +900,42 @@ impl App {
     }
 
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<Exit> {
+        self.redraw = true;
+        let mut drawn = Instant::now();
         loop {
-            terminal.draw(|f| crate::ui::draw(f, self))?;
+            // Draw only when something changed, the spinner is turning, or
+            // the ages on screen may have moved on.
+            if self.redraw || self.searching() || drawn.elapsed() >= IDLE_REDRAW {
+                terminal.draw(|f| crate::ui::draw(f, self))?;
+                self.redraw = false;
+                drawn = Instant::now();
+            }
             let mut latest = None;
             while let Ok(s) = self.rx.try_recv() {
                 latest = Some(s);
             }
             if let Some(s) = latest {
                 self.apply(s);
+                self.redraw = true;
             }
             while let Ok(c) = self.watch.try_recv() {
                 self.merge(c);
+                self.redraw = true;
             }
             while let Ok((dir, g)) = self.git_rx.try_recv() {
-                match g {
-                    Some(g) => self.git.insert(dir, g),
-                    None => self.git.remove(&dir),
+                let changed = match g {
+                    Some(g) => self.git.insert(dir, g.clone()) != Some(g),
+                    None => self.git.remove(&dir).is_some(),
                 };
+                self.redraw |= changed;
             }
             self.poll_search();
-            // Redraw faster while the spinner is animating.
+            self.poll_loader();
+            self.want_git_hot();
+            // Wake faster while the spinner is animating.
             let tick = if self.searching() { 80 } else { 200 };
             if event::poll(Duration::from_millis(tick))? {
+                self.redraw = true;
                 match event::read()? {
                     Event::Key(k) if k.kind == KeyEventKind::Press => {
                         if let Some(exit) = self.on_key(k) {
@@ -704,6 +943,8 @@ impl App {
                         }
                     }
                     Event::Mouse(m) => self.on_mouse(m),
+                    Event::FocusGained => self.focus.store(true, Ordering::Relaxed),
+                    Event::FocusLost => self.focus.store(false, Ordering::Relaxed),
                     _ => {}
                 }
             }
@@ -744,6 +985,11 @@ impl App {
             self.on_theme_key(k, was);
             return None;
         }
+        if let Some(was) = self.picking_channel.clone() {
+            // Saves the view itself on enter.
+            self.on_channel_key(k, was);
+            return None;
+        }
         if self.showing_keys {
             self.showing_keys = false;
             return None;
@@ -782,11 +1028,7 @@ impl App {
         self.status = None;
         match k.code {
             KeyCode::Char('q') => return Some(Exit::Quit),
-            KeyCode::Esc if !self.filter.is_empty() => {
-                self.filter.clear();
-                self.filter_changed();
-            }
-            KeyCode::Esc => return Some(Exit::Quit),
+            KeyCode::Esc => self.step_back(),
             KeyCode::Char('j') => return self.nav(1),
             KeyCode::Char('k') => return self.nav(-1),
             KeyCode::Char('d') if ctrl => return self.nav(15),
@@ -811,6 +1053,7 @@ impl App {
             }
             KeyCode::Char('c') => self.cycle_channel(1),
             KeyCode::Char('C') => self.cycle_channel(-1),
+            KeyCode::Char('#') => self.picking_channel = Some(self.channel_filter.clone()),
             KeyCode::Char('l') => {
                 self.live_only = !self.live_only;
                 self.rebuild_view();
@@ -845,6 +1088,26 @@ impl App {
         None
     }
 
+    /// Undo one narrowing of the list: the search, then the channel, the
+    /// agent and live-only. It never quits; that is `q`.
+    fn step_back(&mut self) {
+        if !self.filter.is_empty() {
+            self.filter.clear();
+            self.filter_changed();
+            return;
+        }
+        if self.channel_filter.is_some() {
+            self.channel_filter = None;
+        } else if self.agent_filter.is_some() {
+            self.agent_filter = None;
+        } else if self.live_only {
+            self.live_only = false;
+        } else {
+            return;
+        }
+        self.rebuild_view();
+    }
+
     /// Title matches update immediately; the text search is debounced.
     fn filter_changed(&mut self) {
         self.search_gen += 1;
@@ -860,10 +1123,18 @@ impl App {
         if self.search_due.is_some_and(|t| Instant::now() >= t) {
             self.search_due = None;
             self.search_progress = Some((0, self.files.len()));
+            // What the list can show first, then the rest for the
+            // "in other channels" count.
+            let (mut files, rest): (Vec<_>, Vec<_>) = self
+                .files
+                .iter()
+                .cloned()
+                .partition(|(i, _, _)| self.in_scope(*i));
+            files.extend(rest);
             self.searcher.start(
                 self.search_gen,
                 search::terms(&self.filter),
-                self.files.clone(),
+                Arc::new(files),
             );
         }
         let mut changed = false;
@@ -871,6 +1142,7 @@ impl App {
             if p.generation != self.search_gen {
                 continue;
             }
+            self.redraw = true;
             self.search_progress = (!p.finished).then_some((p.done, p.total));
             for h in p.hits {
                 self.text_hits.insert(h.idx, h.snippet);
@@ -1215,6 +1487,91 @@ mod tests {
         assert_eq!(titles(&a), ["Corp"]);
     }
 
+    fn work_and_scratch() -> App {
+        let mut a = app(vec![
+            with(Agent::Claude, "a", "Fold zebra", "/home/d/scratch", 0),
+            with(Agent::Claude, "b", "Pipe zebra", "/home/d/src/pipe-960", 10),
+            with(Agent::Codex, "c", "Corp", "/home/d/corp/api/sub", 20),
+        ]);
+        a.set_channels(Channels::parse(
+            "work = ~/corp/*, ~/src/pipe-*\n",
+            Path::new("/home/d"),
+        ));
+        a
+    }
+
+    #[test]
+    fn the_channel_picker_tries_channels_and_esc_goes_back() {
+        let mut a = work_and_scratch();
+        assert_eq!(
+            a.channel_counts(),
+            [
+                (None, 3),
+                (Some("work".to_string()), 2),
+                (Some("scratch".to_string()), 1)
+            ]
+        );
+        press(&mut a, KeyCode::Char('#'));
+        assert!(a.picking_channel.is_some());
+        press(&mut a, KeyCode::Char('j'));
+        assert_eq!(titles(&a), ["Pipe zebra", "Corp"], "moving applies it");
+        press(&mut a, KeyCode::Esc);
+        assert!(a.picking_channel.is_none());
+        assert_eq!(a.channel_filter, None);
+
+        press(&mut a, KeyCode::Char('#'));
+        press(&mut a, KeyCode::Char('G'));
+        press(&mut a, KeyCode::Enter);
+        assert_eq!(a.channel_filter.as_deref(), Some("scratch"));
+        assert_eq!(a.saved_view.channel.as_deref(), Some("scratch"));
+    }
+
+    #[test]
+    fn a_search_in_a_channel_counts_matches_elsewhere() {
+        let mut a = work_and_scratch();
+        a.channel_filter = Some("work".into());
+        press(&mut a, KeyCode::Char('/'));
+        typed(&mut a, "zebra");
+        assert_eq!(titles(&a), ["Pipe zebra"]);
+        assert_eq!(a.elsewhere, 1);
+        a.channel_filter = None;
+        a.rebuild_view();
+        assert_eq!(a.elsewhere, 0);
+    }
+
+    #[test]
+    fn esc_steps_back_through_filters() {
+        let mut a = work_and_scratch();
+        a.channel_filter = Some("work".into());
+        a.agent_filter = Some(Agent::Codex);
+        a.live_only = true;
+        a.filter = "corp".into();
+        a.rebuild_view();
+        press(&mut a, KeyCode::Esc);
+        assert!(a.filter.is_empty());
+        press(&mut a, KeyCode::Esc);
+        assert_eq!(a.channel_filter, None);
+        press(&mut a, KeyCode::Esc);
+        assert_eq!(a.agent_filter, None);
+        press(&mut a, KeyCode::Esc);
+        assert!(!a.live_only);
+        assert!(press(&mut a, KeyCode::Esc).is_none());
+        assert_eq!(a.saved_view, ViewState::default());
+    }
+
+    #[test]
+    fn whole_transcripts_kept_are_capped() {
+        let mut a = five();
+        for i in 0..5 {
+            a.keep_full(i, Vec::new());
+        }
+        assert_eq!(a.full_kept, [2, 3, 4]);
+        assert!(!a.previews.contains_key(&(0, true)));
+        assert!(a.previews.contains_key(&(4, true)));
+        a.keep_full(2, Vec::new());
+        assert_eq!(a.full_kept, [3, 4, 2]);
+    }
+
     #[test]
     fn channel_names_are_searchable_and_follow_merged_sessions() {
         let mut a = app(vec![with(Agent::Claude, "a", "A", "/home/d/corp/x", 10)]);
@@ -1305,7 +1662,7 @@ mod tests {
     fn quitting() {
         let mut a = five();
         assert!(quits(press(&mut a, KeyCode::Char('q'))));
-        assert!(quits(press(&mut a, KeyCode::Esc)));
+        assert!(press(&mut a, KeyCode::Esc).is_none(), "esc never quits");
         assert!(quits(ctrl(&mut a, 'c')));
         // ctrl-c quits even while typing a filter.
         press(&mut a, KeyCode::Char('/'));
@@ -1334,7 +1691,7 @@ mod tests {
         press(&mut a, KeyCode::Enter);
         assert!(!a.filtering);
         assert_eq!(a.filter, "t3", "enter keeps the filter");
-        // Esc clears an applied filter before it quits.
+        // Esc clears an applied filter.
         assert!(press(&mut a, KeyCode::Esc).is_none());
         assert_eq!(a.filter, "");
         assert_eq!(a.view.len(), 5);
@@ -2063,7 +2420,12 @@ mod tests {
             updated: vec![with(Agent::Claude, "n", "New", "/w/new", 0)],
             removed: Vec::new(),
         });
-        assert!(a.git_wanted.lock().unwrap().contains(&"/w/new".to_string()));
+        assert!(a
+            .git_wanted
+            .lock()
+            .unwrap()
+            .all
+            .contains(&"/w/new".to_string()));
     }
 
     #[test]

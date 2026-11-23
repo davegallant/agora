@@ -10,15 +10,36 @@ All notable changes to agora. The format follows
 
 - `d` reviews the selected session's folder in `hunk diff --watch`, or
   `git diff` when hunk isn't installed, and returns to agora afterwards.
+- `#` opens a channel picker that lists every channel with its session count.
+- The preview names the selected session's channel.
+- A search inside a channel shows how many more sessions match in other
+  channels.
 
 ### Changed
 
+- `esc` no longer quits. It clears the search, then the channel, agent and
+  live-only filters, one per press; `q` quits.
+- Opening a long conversation (`v`, or a conversation-search hit) no longer
+  freezes the list: the whole transcript loads in the background while the
+  tail shows, and only the last three are kept in memory.
+- agora polls less: live state every 15s instead of 2s while its terminal is
+  unfocused or an agent is running in it, and `git status` only for live and
+  selected sessions' folders each round, with the rest every five minutes. A
+  `git status` that hangs is stopped after 5s.
+- Conversation search reads the sessions in the current channel and agent
+  first, so their matches show sooner.
+- The screen redraws only when something changes, instead of five times a
+  second.
 - The saved view and pins move to `~/.local/state/agora/` (or
   `$XDG_STATE_HOME/agora/`), out of the settings folder; existing files move
   there on first use. Settings follow `$XDG_CONFIG_HOME` when it is set.
 
 ### Fixed
 
+- A new session no longer loses its Ghostty tab to an older session with the
+  same title in the same folder.
+- Long project names end in `…` when cut, and "1 match" / "2 matches" read
+  right.
 - A session that moves folder partway through, like one Claude's agent view
   moves into `.claude/worktrees/…`, shows git status, `d` and `Y` for the
   folder it works in now. It still resumes from where it started.

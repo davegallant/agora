@@ -17,7 +17,9 @@ mod theme;
 mod ui;
 
 use anyhow::{Context, Result};
-use ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+use ratatui::crossterm::event::{
+    DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture,
+};
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{enable_raw_mode, EnterAlternateScreen};
 use std::path::PathBuf;
@@ -121,28 +123,38 @@ fn main() -> Result<()> {
     let mut terminal = ratatui::init();
     let restore = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let _ = execute!(std::io::stdout(), DisableMouseCapture);
+        let _ = execute!(std::io::stdout(), DisableMouseCapture, DisableFocusChange);
         restore(info);
     }));
-    // Mouse capture lets the wheel scroll the panes; shift-drag still selects text.
-    let _ = execute!(std::io::stdout(), EnableMouseCapture);
+    // Mouse capture lets the wheel scroll the panes; shift-drag still selects
+    // text. Focus reports let the pollers slow down while nobody is looking.
+    let _ = execute!(std::io::stdout(), EnableMouseCapture, EnableFocusChange);
     loop {
         let result = app.run(&mut terminal);
-        let _ = execute!(std::io::stdout(), DisableMouseCapture);
+        let _ = execute!(std::io::stdout(), DisableMouseCapture, DisableFocusChange);
         ratatui::restore();
 
         let (cwd, argv) = match result? {
             app::Exit::Quit => return Ok(()),
             app::Exit::Exec { cwd, argv } => (cwd, argv),
         };
-        app.status = match child::run(cwd.as_deref(), &argv) {
+        // The agent has the screen: agora's pollers can idle until it is back.
+        app.focus.store(false, std::sync::atomic::Ordering::Relaxed);
+        let ran = child::run(cwd.as_deref(), &argv);
+        app.focus.store(true, std::sync::atomic::Ordering::Relaxed);
+        app.status = match ran {
             Ok(st) if st.success() => None,
             Ok(st) => Some(format!("{} exited ({st})", argv[0])),
             Err(e) => Some(format!("could not run {}: {e}", argv[0])),
         };
         // Back from the agent: take the terminal again.
         enable_raw_mode()?;
-        execute!(std::io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
+        execute!(
+            std::io::stdout(),
+            EnterAlternateScreen,
+            EnableMouseCapture,
+            EnableFocusChange
+        )?;
         terminal.clear()?;
     }
 }

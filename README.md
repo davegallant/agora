@@ -56,6 +56,7 @@ Other terminals don't have these yet.
 | `d` | review the session folder's changes in [hunk](https://github.com/modem-dev/hunk) (`git diff` without it); agora returns after |
 | `/` | search titles and conversation text; `esc` clears |
 | `c` `C` | next / previous channel; back to all after the last |
+| `#` | pick a channel from a list with session counts: `j`/`k` try one, `enter` keeps it, `esc` cancels |
 | `tab` | cycle agent: all, claude, codex, pi |
 | `l` | live sessions only |
 | `s` | sort by recent, project or size; live sessions stay on top |
@@ -64,6 +65,7 @@ Other terminals don't have these yet.
 | `T` | choose a theme: `j`/`k` try one, `enter` keeps it, `esc` cancels |
 | `r` | reload every session from disk |
 | `?` | show every key |
+| `esc` | clear the search, then the channel, agent and live filters, one per press |
 | `q` | quit |
 
 agora reopens with the channel, agent, live-only and sort you left it with.
@@ -95,8 +97,10 @@ personal = ~/src/github.com/me/blog, ~/dotfiles
 A folder covers itself and everything under it, and `*` matches part of one
 folder name. The first matching line wins. A session that no line matches gets
 a channel named after its own folder. `c` steps through your channels in the
-order written, then through those folder channels, most recent first. Search
-matches channel names too. `agora --channels` prints every channel and its
+order written, then through those folder channels, most recent first; `#`
+lists them all with their session counts. The preview names the selected
+session's channel, and a search inside a channel says how many more sessions
+match in other channels. Search matches channel names too. `agora --channels` prints every channel and its
 session count, tab-separated, in that same order.
 
 ## Where sessions come from

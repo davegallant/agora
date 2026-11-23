@@ -34,6 +34,7 @@ pub const KEYS: &[(&str, &str)] = &[
         "move (g / G first / last, ctrl-d / ctrl-u by page)",
     ),
     ("c C", "next / previous channel"),
+    ("#", "pick a channel from a list, with session counts"),
     ("tab", "cycle agent: all, claude, codex, pi"),
     ("l", "live sessions only"),
     ("s", "sort by recent, project or size"),
@@ -41,6 +42,10 @@ pub const KEYS: &[(&str, &str)] = &[
     ("T", "choose a theme"),
     ("r", "reload every session from disk"),
     ("?", "show these keys"),
+    (
+        "esc",
+        "clear the search, then the channel, agent and live filters",
+    ),
     ("q", "quit"),
 ];
 
@@ -158,6 +163,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     draw_footer(f, app, footer);
     if app.picking_theme.is_some() {
         draw_theme_picker(f, app);
+    } else if app.picking_channel.is_some() {
+        draw_channel_picker(f, app);
     } else if app.showing_keys {
         draw_keys(f, app);
     }
@@ -235,6 +242,52 @@ fn draw_theme_picker(f: &mut Frame, app: &App) {
     popup(f, app, "theme", lines, width);
 }
 
+/// Every channel with its session count; the current one is applied. A long
+/// list scrolls to keep the current one in view.
+fn draw_channel_picker(f: &mut Frame, app: &App) {
+    let t = app.theme();
+    let counts = app.channel_counts();
+    let name = |c: &Option<String>| c.as_deref().unwrap_or("all").to_string();
+    let col = counts
+        .iter()
+        .map(|(c, _)| name(c).chars().count())
+        .max()
+        .unwrap_or(0);
+    let at = counts
+        .iter()
+        .position(|(c, _)| *c == app.channel_filter)
+        .unwrap_or(0);
+    let room = f.area().height.saturating_sub(4).max(1) as usize;
+    let start = at
+        .saturating_sub(room / 2)
+        .min(counts.len().saturating_sub(room));
+    let lines: Vec<Line> = counts
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(room)
+        .map(|(i, (c, n))| {
+            let text = format!(
+                " {} {:<col$}  {n:>4} ",
+                if i == at { "▶" } else { " " },
+                name(c)
+            );
+            if i == at {
+                Line::from(text).style(
+                    Style::new()
+                        .fg(t.on_accent)
+                        .bg(t.accent)
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else {
+                Line::from(text)
+            }
+        })
+        .collect();
+    let width = (col + 12) as u16;
+    popup(f, app, "channel", lines, width);
+}
+
 fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
     let t = app.theme();
     let mut parts: Vec<String> = Vec::new();
@@ -290,8 +343,16 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
                 dim,
             ));
         } else if !app.text_hits.is_empty() {
+            let n = app.text_hits.len();
+            let plural = if n == 1 { "match" } else { "matches" };
             spans.push(Span::styled(
-                format!("   {} match in conversation text", app.text_hits.len()),
+                format!("   {n} {plural} in conversation text"),
+                dim,
+            ));
+        }
+        if app.elsewhere > 0 && !app.searching() {
+            spans.push(Span::styled(
+                format!("   +{} in other channels (# to switch)", app.elsewhere),
                 dim,
             ));
         }
@@ -325,7 +386,7 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
                         Span::styled(" ±", Style::new().fg(t.accent)),
                     ],
                     _ => vec![Span::styled(
-                        s.project().to_string(),
+                        shorten(s.project(), 18),
                         Style::new().fg(t.subtle),
                     )],
                 })),
@@ -383,6 +444,10 @@ fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
         Line::from(vec![
             Span::styled(s.agent.name(), Style::new().fg(agent_color(t, s.agent))),
             Span::raw(format!(" · {} · {}", ago(s.mtime), s.dir)).fg(t.subtle),
+            Span::styled(
+                format!(" · #{}", app.channel_of[i]),
+                Style::new().fg(t.muted),
+            ),
             Span::styled(
                 if app.is_pinned(i) { " · pinned" } else { "" },
                 Style::new().fg(t.accent),
@@ -478,6 +543,11 @@ fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
             Style::new().fg(t.on_accent).bg(t.accent).bold(),
         ));
         title.push(Span::styled(" n/N ", Style::new().fg(t.muted)));
+    } else if pane.loading {
+        title.push(Span::styled(
+            " loading the whole conversation… ",
+            Style::new().fg(t.muted),
+        ));
     } else if !terms.is_empty() && text_hit {
         title.push(Span::styled(" no match shown ", Style::new().fg(t.muted)));
     }
@@ -541,6 +611,8 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
         Line::from(" j/k scroll · n/N match · / search · esc close").fg(t.muted)
     } else if app.picking_theme.is_some() {
         Line::from(" j/k try a theme · enter keep · esc cancel").fg(t.muted)
+    } else if app.picking_channel.is_some() {
+        Line::from(" j/k try a channel · enter keep · esc cancel").fg(t.muted)
     } else if app.showing_keys {
         Line::from(" any key closes").fg(t.muted)
     } else if app.filtering {

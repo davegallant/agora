@@ -12,8 +12,10 @@ use crate::sessions::{Agent, Session};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum State {
@@ -126,13 +128,36 @@ pub fn snapshot() -> Snapshot {
     }
 }
 
-pub fn spawn_poller(every: Duration) -> Receiver<Snapshot> {
+/// Whether agora's terminal has focus. Background pollers slow down while it
+/// doesn't, since nobody is looking; a terminal that never reports focus
+/// leaves it set.
+pub type Focus = Arc<AtomicBool>;
+
+/// Sleep `fast` while focused and `slow` while not, measured from `since`.
+/// Checks focus a few times a second, so regaining it cuts a slow wait short.
+pub fn pace(focus: &AtomicBool, since: Instant, fast: Duration, slow: Duration) {
+    loop {
+        let every = if focus.load(Ordering::Relaxed) {
+            fast
+        } else {
+            slow
+        };
+        let left = every.saturating_sub(since.elapsed());
+        if left.is_zero() {
+            return;
+        }
+        std::thread::sleep(left.min(Duration::from_millis(250)));
+    }
+}
+
+pub fn spawn_poller(focus: Focus, fast: Duration, slow: Duration) -> Receiver<Snapshot> {
     let (tx, rx): (Sender<Snapshot>, _) = std::sync::mpsc::channel();
     std::thread::spawn(move || loop {
+        let started = Instant::now();
         if tx.send(snapshot()).is_err() {
             return;
         }
-        std::thread::sleep(every);
+        pace(&focus, started, fast, slow);
     });
     rx
 }
@@ -153,8 +178,8 @@ fn title_matches(tab: &str, s: &Session) -> bool {
             || tab.strip_prefix(s.title.as_str()).is_some_and(|r| r.starts_with(" |")))
 }
 
-/// Map session index -> live state. `sessions` is sorted newest first, so when
-/// several sessions share a title the most recent one claims the tab.
+/// Map session index -> live state. When several sessions share a title, the
+/// most recent one claims the tab; `sessions` may be in any order.
 pub fn resolve(sessions: &[Session], snap: &Snapshot) -> HashMap<usize, Live> {
     let mut live: HashMap<usize, Live> = HashMap::new();
 
@@ -167,12 +192,15 @@ pub fn resolve(sessions: &[Session], snap: &Snapshot) -> HashMap<usize, Live> {
         };
         // A Claude session that `claude agents` reports running beats a newer
         // past one with the same title.
+        // `min_by_key` keeps the first of equals, so ties go to list order.
+        let newest = |(_, s): &(usize, &Session)| std::cmp::Reverse(s.mtime);
         let hit = sessions
             .iter()
             .enumerate()
             .filter(fits)
-            .find(|(_, s)| s.agent == Agent::Claude && snap.claude.contains_key(&s.id))
-            .or_else(|| sessions.iter().enumerate().find(fits));
+            .filter(|(_, s)| s.agent == Agent::Claude && snap.claude.contains_key(&s.id))
+            .min_by_key(newest)
+            .or_else(|| sessions.iter().enumerate().filter(fits).min_by_key(newest));
         if let Some((i, _)) = hit {
             let state = match glyph {
                 Glyph::Bell => State::NeedsYou,
@@ -294,6 +322,51 @@ mod tests {
         let live = resolve(&sessions, &snap);
         assert_eq!(live[&1].term.as_ref().map(|t| t.id.as_str()), Some("T1"));
         assert!(!live.contains_key(&0), "{live:?}");
+    }
+
+    #[test]
+    fn the_newest_session_claims_a_shared_title_wherever_it_sits() {
+        // A session that appeared since startup is appended to the list.
+        let mut old = s(Agent::Codex, "x-old", "Reply hi", "/w/b");
+        let mut new = s(Agent::Codex, "x-new", "Reply hi", "/w/b");
+        old.mtime = SystemTime::UNIX_EPOCH + Duration::from_secs(10);
+        new.mtime = SystemTime::UNIX_EPOCH + Duration::from_secs(20);
+        let snap = Snapshot {
+            terms: vec![term("T1", "Reply hi | b", "/w/b")],
+            ..Default::default()
+        };
+        let live = resolve(&[old, new], &snap);
+        assert!(live.contains_key(&1), "{live:?}");
+        assert!(!live.contains_key(&0));
+    }
+
+    #[test]
+    fn pace_waits_longer_without_focus() {
+        let focus = AtomicBool::new(true);
+        let t = Instant::now();
+        pace(
+            &focus,
+            t,
+            Duration::from_millis(20),
+            Duration::from_secs(60),
+        );
+        assert!(t.elapsed() < Duration::from_secs(1));
+        focus.store(false, Ordering::Relaxed);
+        let t = Instant::now();
+        std::thread::scope(|sc| {
+            sc.spawn(|| {
+                std::thread::sleep(Duration::from_millis(100));
+                focus.store(true, Ordering::Relaxed);
+            });
+            pace(
+                &focus,
+                t,
+                Duration::from_millis(20),
+                Duration::from_secs(60),
+            );
+        });
+        let took = t.elapsed();
+        assert!(took >= Duration::from_millis(100) && took < Duration::from_secs(2));
     }
 
     #[test]
