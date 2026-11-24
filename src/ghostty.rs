@@ -43,7 +43,10 @@ fn installed() -> bool {
 }
 
 /// Wait for `child` and collect its output, killing it after `timeout`.
-fn wait_output(mut child: std::process::Child, timeout: Duration) -> Result<std::process::Output> {
+pub fn wait_output(
+    mut child: std::process::Child,
+    timeout: Duration,
+) -> Result<std::process::Output> {
     let start = Instant::now();
     while child.try_wait()?.is_none() {
         if start.elapsed() > timeout {
@@ -138,6 +141,17 @@ on run argv
   tell application "Ghostty"
     focus (first terminal whose id is (item 1 of argv))
     activate
+  end tell
+end run"#;
+    osascript(SCRIPT, &[id]).map(|_| ())
+}
+
+/// Close a terminal surface: its split, or its tab when it is the only one.
+pub fn close(id: &str) -> Result<()> {
+    const SCRIPT: &str = r#"
+on run argv
+  tell application "Ghostty"
+    close (first terminal whose id is (item 1 of argv))
   end tell
 end run"#;
     osascript(SCRIPT, &[id]).map(|_| ())

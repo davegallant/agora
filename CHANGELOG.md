@@ -8,6 +8,10 @@ All notable changes to agora. The format follows
 
 ### Added
 
+- `x` closes a live session: it closes the session's Ghostty split or tab, or
+  runs `claude stop` for a background Claude session. Press it twice to
+  confirm. It leaves the live group at once, and the transcript stays, so the
+  session can still be resumed.
 - `d` reviews the selected session's folder in `hunk diff --watch`, or
   `git diff` when hunk isn't installed, and returns to agora afterwards.
 - `#` opens a channel picker that lists every channel with its session count.

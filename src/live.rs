@@ -114,6 +114,22 @@ fn parse_shells(ps: &str) -> HashMap<u32, usize> {
     shells
 }
 
+/// Stop a background Claude session with `claude stop`, giving up after a few
+/// seconds so a hung `claude` cannot freeze the UI.
+pub fn stop_background(id: &str) -> anyhow::Result<()> {
+    let child = Command::new("claude")
+        .args(["stop", id])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+    let out = ghostty::wait_output(child, Duration::from_secs(5))?;
+    if !out.status.success() {
+        anyhow::bail!("{}", String::from_utf8_lossy(&out.stderr).trim());
+    }
+    Ok(())
+}
+
 pub fn snapshot() -> Snapshot {
     let claude = claude_agents();
     let shells = if claude.is_empty() {

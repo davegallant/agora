@@ -24,6 +24,10 @@ pub const KEYS: &[(&str, &str)] = &[
         "v",
         "read the whole conversation full-screen; / searches it, esc closes",
     ),
+    (
+        "x",
+        "close a live session: its Ghostty tab, or stop it if background (x twice)",
+    ),
     ("y Y", "copy the resume command / the project path"),
     ("d", "review the folder's changes in hunk (or git diff)"),
     ("/", "search titles and conversation text; esc clears"),

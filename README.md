@@ -52,6 +52,7 @@ Other terminals don't have these yet.
 | `enter` | attach / resume here (jump to tab in Ghostty) |
 | `t` | resume (or attach) in a new tab (Ghostty only) |
 | `v` | read the whole conversation full-screen: `/` searches it, `n`/`N` jump, `esc` closes |
+| `x` | close a live session: its Ghostty split or tab, or `claude stop` for a background one; press twice to confirm |
 | `y` `Y` | copy the resume command / the project path |
 | `d` | review the session folder's changes in [hunk](https://github.com/modem-dev/hunk) (`git diff` without it); agora returns after |
 | `/` | search titles and conversation text; `esc` clears |

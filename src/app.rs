@@ -118,6 +118,12 @@ pub struct App {
     pub picking_theme: Option<usize>,
     /// The `?` overlay is up; the next key closes it.
     pub showing_keys: bool,
+    /// The session `x` asked to close, waiting for a second `x`; any other
+    /// key cancels.
+    closing: Option<PathBuf>,
+    /// Terminal and session ids closed with `x`, and when: left out of live
+    /// snapshots for a while, since a poll already under way still has them.
+    closed: Vec<(String, Instant)>,
     /// The selected session is open full-screen.
     pub reading: Option<Reading>,
     /// A selected session that a rebuild dropped from the view (a reload,
@@ -147,6 +153,8 @@ const FULL_KEPT: usize = 3;
 
 /// Live state is polled this often while agora is on screen, and less while
 /// an agent it resumed has the terminal.
+/// How long a session closed with `x` stays out of live snapshots.
+const CLOSED_FOR: Duration = Duration::from_secs(10);
 const LIVE_EVERY: (Duration, Duration) = (Duration::from_secs(2), Duration::from_secs(15));
 const GIT_EVERY: (Duration, Duration) = (Duration::from_secs(15), Duration::from_secs(120));
 
@@ -276,6 +284,8 @@ impl App {
             theme,
             picking_theme: None,
             showing_keys: false,
+            closing: None,
+            closed: Vec::new(),
             reading: None,
             lost: None,
             focus,
@@ -574,7 +584,11 @@ impl App {
             .select((!self.view.is_empty()).then(|| pos.unwrap_or(0).min(self.view.len() - 1)));
     }
 
-    fn apply(&mut self, snap: Snapshot) {
+    fn apply(&mut self, mut snap: Snapshot) {
+        self.closed.retain(|(_, at)| at.elapsed() < CLOSED_FOR);
+        let closed = |id: &str| self.closed.iter().any(|(c, _)| c == id);
+        snap.terms.retain(|t| !closed(&t.id));
+        snap.claude.retain(|id, _| !closed(id));
         self.live = live::resolve(&self.sessions, &snap);
         self.last_snapshot = snap;
         self.rebuild_view();
@@ -980,6 +994,7 @@ impl App {
         if ctrl && k.code == KeyCode::Char('c') {
             return Some(Exit::Quit);
         }
+        let confirming = self.closing.take();
         if let Some(was) = self.picking_theme {
             self.on_theme_key(k, was);
             return None;
@@ -1077,6 +1092,7 @@ impl App {
             KeyCode::Char('y') => self.copy(false),
             KeyCode::Char('Y') => self.copy(true),
             KeyCode::Char('p') => self.toggle_pin(),
+            KeyCode::Char('x') => self.close(confirming),
             KeyCode::Char('v') => self.open_reading(),
             KeyCode::Char('d') => return self.diff(),
             KeyCode::Char('T') => self.picking_theme = Some(self.theme),
@@ -1185,6 +1201,48 @@ impl App {
             cwd: Some(s.cwd.clone()),
             argv: s.resume_argv(),
         })
+    }
+
+    /// Close the selected live session: stop it if it runs in the background,
+    /// else close its Ghostty terminal. The first `x` only asks; `confirming`
+    /// is the session a previous `x` asked about.
+    fn close(&mut self, confirming: Option<PathBuf>) {
+        let Some(i) = self.selected() else { return };
+        let s = &self.sessions[i];
+        let title = s.title.clone();
+        let Some(live) = self.live.get(&i).cloned() else {
+            self.status = Some(format!("“{title}” isn't running"));
+            return;
+        };
+        if live.background.is_none() && live.term.is_none() {
+            self.status = Some(format!(
+                "“{title}” isn't in a Ghostty tab; close it where it runs"
+            ));
+            return;
+        }
+        if confirming.as_ref() != Some(&s.path) {
+            self.closing = Some(s.path.clone());
+            self.status = Some(format!("close “{title}”? x again to confirm"));
+            return;
+        }
+        let done = match (&live.background, &live.term) {
+            (Some(id), _) => live::stop_background(id),
+            (None, Some(term)) => ghostty::close(&term.id),
+            (None, None) => return,
+        };
+        if done.is_ok() {
+            let now = Instant::now();
+            self.closed.push((self.sessions[i].id.clone(), now));
+            if let Some(term) = live.term {
+                self.closed.push((term.id, now));
+            }
+            let snap = std::mem::take(&mut self.last_snapshot);
+            self.apply(snap);
+        }
+        self.status = Some(match done {
+            Ok(()) => format!("closed “{title}”"),
+            Err(e) => format!("could not close “{title}”: {e}"),
+        });
     }
 
     /// Copy the selected session's resume command, or with `path` its folder.
@@ -1967,6 +2025,72 @@ mod tests {
             _ => panic!("expected an attach"),
         }
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn x_asks_before_closing_and_any_other_key_cancels() {
+        let mut a = app(vec![session("a", "A", 0), session("b", "B", 10)]);
+        press(&mut a, KeyCode::Char('x'));
+        assert_eq!(a.status.as_deref(), Some("“A” isn't running"));
+
+        a.live.insert(0, live(State::Open));
+        a.rebuild_view();
+        press(&mut a, KeyCode::Char('x'));
+        assert!(a
+            .status
+            .as_deref()
+            .unwrap()
+            .contains("isn't in a Ghostty tab"));
+
+        a.live.insert(
+            0,
+            Live {
+                term: Some(Term {
+                    id: "T".into(),
+                    title: "A".into(),
+                    cwd: "/w/proj".into(),
+                }),
+                ..live(State::Open)
+            },
+        );
+        press(&mut a, KeyCode::Char('x'));
+        assert_eq!(a.status.as_deref(), Some("close “A”? x again to confirm"));
+        press(&mut a, KeyCode::Char('j'));
+        press(&mut a, KeyCode::Char('k'));
+        press(&mut a, KeyCode::Char('x'));
+        assert_eq!(
+            a.status.as_deref(),
+            Some("close “A”? x again to confirm"),
+            "moving away cancelled the first x"
+        );
+        // Closing may fail without Ghostty; either way it was attempted.
+        press(&mut a, KeyCode::Char('x'));
+        let status = a.status.unwrap();
+        assert!(
+            status == "closed “A”" || status.starts_with("could not close “A”"),
+            "{status}"
+        );
+    }
+
+    #[test]
+    fn a_closed_session_stays_out_of_late_snapshots() {
+        let mut a = app(vec![session("a", "A", 0)]);
+        let snap = || Snapshot {
+            terms: vec![Term {
+                id: "T".into(),
+                title: "A".into(),
+                cwd: "/w/proj".into(),
+            }],
+            ..Default::default()
+        };
+        a.apply(snap());
+        assert!(a.live.contains_key(&0));
+        a.closed.push(("T".into(), Instant::now()));
+        a.apply(snap());
+        assert!(a.live.is_empty(), "a poll from before the close");
+        a.closed[0].1 -= CLOSED_FOR;
+        a.apply(snap());
+        assert!(a.live.contains_key(&0), "the hold expires");
     }
 
     #[test]
