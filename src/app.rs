@@ -18,7 +18,7 @@ use ratatui::DefaultTerminal;
 use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -123,7 +123,7 @@ pub struct App {
     /// A selected session that a rebuild dropped from the view (a reload,
     /// say): selected again when it comes back, until the user moves.
     lost: Option<PathBuf>,
-    /// Whether agora's terminal has focus; pollers slow down without it.
+    /// Cleared while a resumed agent has the terminal; pollers slow down then.
     pub focus: Focus,
     /// Folders the git poller checks every round, as last sent.
     git_hot: Vec<String>,
@@ -145,7 +145,8 @@ pub struct App {
 /// Whole transcripts kept in memory at once; a long one can be tens of MB.
 const FULL_KEPT: usize = 3;
 
-/// Live state is polled this often while agora has focus, and less without.
+/// Live state is polled this often while agora is on screen, and less while
+/// an agent it resumed has the terminal.
 const LIVE_EVERY: (Duration, Duration) = (Duration::from_secs(2), Duration::from_secs(15));
 const GIT_EVERY: (Duration, Duration) = (Duration::from_secs(15), Duration::from_secs(120));
 
@@ -943,8 +944,6 @@ impl App {
                         }
                     }
                     Event::Mouse(m) => self.on_mouse(m),
-                    Event::FocusGained => self.focus.store(true, Ordering::Relaxed),
-                    Event::FocusLost => self.focus.store(false, Ordering::Relaxed),
                     _ => {}
                 }
             }

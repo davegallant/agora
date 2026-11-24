@@ -128,9 +128,9 @@ pub fn snapshot() -> Snapshot {
     }
 }
 
-/// Whether agora's terminal has focus. Background pollers slow down while it
-/// doesn't, since nobody is looking; a terminal that never reports focus
-/// leaves it set.
+/// Whether agora is on screen: cleared while an agent it resumed has the
+/// terminal. Background pollers slow down then, since nobody is looking.
+/// (Not terminal focus: agora is often watched from an unfocused split.)
 pub type Focus = Arc<AtomicBool>;
 
 /// Sleep `fast` while focused and `slow` while not, measured from `since`.

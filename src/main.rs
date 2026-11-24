@@ -17,9 +17,7 @@ mod theme;
 mod ui;
 
 use anyhow::{Context, Result};
-use ratatui::crossterm::event::{
-    DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture,
-};
+use ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{enable_raw_mode, EnterAlternateScreen};
 use std::path::PathBuf;
@@ -123,15 +121,14 @@ fn main() -> Result<()> {
     let mut terminal = ratatui::init();
     let restore = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let _ = execute!(std::io::stdout(), DisableMouseCapture, DisableFocusChange);
+        let _ = execute!(std::io::stdout(), DisableMouseCapture);
         restore(info);
     }));
-    // Mouse capture lets the wheel scroll the panes; shift-drag still selects
-    // text. Focus reports let the pollers slow down while nobody is looking.
-    let _ = execute!(std::io::stdout(), EnableMouseCapture, EnableFocusChange);
+    // Mouse capture lets the wheel scroll the panes; shift-drag still selects text.
+    let _ = execute!(std::io::stdout(), EnableMouseCapture);
     loop {
         let result = app.run(&mut terminal);
-        let _ = execute!(std::io::stdout(), DisableMouseCapture, DisableFocusChange);
+        let _ = execute!(std::io::stdout(), DisableMouseCapture);
         ratatui::restore();
 
         let (cwd, argv) = match result? {
@@ -149,12 +146,7 @@ fn main() -> Result<()> {
         };
         // Back from the agent: take the terminal again.
         enable_raw_mode()?;
-        execute!(
-            std::io::stdout(),
-            EnterAlternateScreen,
-            EnableMouseCapture,
-            EnableFocusChange
-        )?;
+        execute!(std::io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
         terminal.clear()?;
     }
 }

@@ -22,8 +22,8 @@ All notable changes to agora. The format follows
 - Opening a long conversation (`v`, or a conversation-search hit) no longer
   freezes the list: the whole transcript loads in the background while the
   tail shows, and only the last three are kept in memory.
-- agora polls less: live state every 15s instead of 2s while its terminal is
-  unfocused or an agent is running in it, and `git status` only for live and
+- agora polls less: live state every 15s instead of 2s while an agent it
+  resumed is running in its terminal, and `git status` only for live and
   selected sessions' folders each round, with the rest every five minutes. A
   `git status` that hangs is stopped after 5s.
 - Conversation search reads the sessions in the current channel and agent
