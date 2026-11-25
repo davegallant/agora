@@ -29,8 +29,9 @@ pub fn current_style(theme: &Theme) -> Style {
         .add_modifier(Modifier::BOLD)
 }
 
-/// Byte ranges of every case-insensitive occurrence of any term, merged and
-/// sorted. ASCII lowercasing keeps byte offsets aligned with `text`.
+/// Byte ranges of every case-insensitive occurrence of any term that starts
+/// a word, as the search matches them, merged and sorted. ASCII lowercasing
+/// keeps byte offsets aligned with `text`.
 pub fn find_ranges(text: &str, terms: &[String]) -> Vec<(usize, usize)> {
     let lower = text.to_ascii_lowercase();
     let mut ranges: Vec<(usize, usize)> = Vec::new();
@@ -38,6 +39,7 @@ pub fn find_ranges(text: &str, terms: &[String]) -> Vec<(usize, usize)> {
         ranges.extend(
             lower
                 .match_indices(t.as_str())
+                .filter(|(at, _)| crate::search::starts_word(&lower, *at))
                 .map(|(at, m)| (at, at + m.len())),
         );
     }
@@ -235,8 +237,8 @@ mod tests {
 
     #[test]
     fn merges_overlapping_terms() {
-        let terms = vec!["foo".to_string(), "oob".to_string()];
-        assert_eq!(find_ranges("xfoobar", &terms), [(1, 5)]);
+        let terms = vec!["foo bar".to_string(), "bar baz".to_string()];
+        assert_eq!(find_ranges("x foo bar baz", &terms), [(2, 13)]);
     }
 
     fn rows(r: &Rendered) -> Vec<String> {
@@ -251,13 +253,13 @@ mod tests {
     fn find_ranges_cases() {
         assert!(find_ranges("anything", &[]).is_empty());
         assert!(find_ranges("anything", &terms(&[""])).is_empty());
-        assert_eq!(find_ranges("FooBAR", &terms(&["bar"])), [(3, 6)]);
+        assert_eq!(find_ranges("Foo-BAR", &terms(&["bar"])), [(4, 7)]);
+        // Only where a word starts, as the search matches.
+        assert!(find_ranges("FooBAR consider", &terms(&["bar", "sid"])).is_empty());
         assert_eq!(find_ranges("x", &terms(&["", "x"])), [(0, 1)]);
         // Touching ranges merge into one highlight.
-        assert_eq!(find_ranges("abcd", &terms(&["ab", "cd"])), [(0, 4)]);
+        assert_eq!(find_ranges("ab cd", &terms(&["ab", "ab c"])), [(0, 4)]);
         assert_eq!(find_ranges("ab ab", &terms(&["ab"])), [(0, 2), (3, 5)]);
-        // Occurrences of one term don't overlap.
-        assert_eq!(find_ranges("aaa", &terms(&["aa"])), [(0, 2)]);
         // Offsets are bytes, past multi-byte text.
         assert_eq!(find_ranges("日本 needle", &terms(&["needle"])), [(7, 13)]);
         assert!(find_ranges("short", &terms(&["longer than text"])).is_empty());

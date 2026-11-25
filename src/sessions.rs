@@ -164,6 +164,7 @@ fn is_noise(t: &str) -> bool {
         "<bash-",
         "<user-",
         "<system-reminder>",
+        "<task-notification>",
         "<environment_context>",
         "<permissions",
         "<user_instructions>",

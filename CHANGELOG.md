@@ -24,9 +24,11 @@ All notable changes to agora. The format follows
 ### Changed
 
 - Search matches every word in any order, in titles and conversation text
-  alike; put words in quotes to match them as a phrase. Sessions found by
-  name list before those found only in their conversation, which show the
-  matching passage beside the title.
+  alike, each at the start of a word (`id` finds "ID" and "identity", not
+  "consider"); put words in quotes to match them as a phrase. Sessions found
+  by name list first, then conversations with the words side by side, in one
+  message, and spread apart. A session found only in its conversation shows
+  the closest matching passage beside its title.
 - `esc` no longer quits. It clears the search, then the channel, agent and
   live-only filters, one per press; `q` quits.
 - Opening a long conversation (`v`, or a conversation-search hit) no longer
@@ -46,6 +48,8 @@ All notable changes to agora. The format follows
 
 ### Fixed
 
+- Background task notifications no longer count as conversation text.
+- The selected row's size and age stay readable on the selection.
 - A new session no longer loses its Ghostty tab to an older session with the
   same title in the same folder.
 - Long project names end in `…` when cut, and "1 match" / "2 matches" read

@@ -107,7 +107,7 @@ pub struct App {
     search_gen: u64,
     search_due: Option<Instant>,
     /// Sessions whose conversation text matches the filter, with a snippet.
-    pub text_hits: HashMap<usize, String>,
+    pub text_hits: HashMap<usize, (search::Score, String)>,
     /// (files searched, total) while a text search runs.
     pub search_progress: Option<(usize, usize)>,
     /// Drives the search spinner's animation.
@@ -547,7 +547,10 @@ impl App {
             .map(|t| t.to_lowercase())
             .collect();
         let by_name = |i: usize| {
-            !terms.is_empty() && terms.iter().all(|t| self.haystacks[i].contains(t.as_str()))
+            !terms.is_empty()
+                && terms
+                    .iter()
+                    .all(|t| search::find_word(&self.haystacks[i], t).is_some())
         };
         let matches = |i: usize| terms.is_empty() || by_name(i) || self.text_hits.contains_key(&i);
         let mut view: Vec<usize> = (0..self.sessions.len())
@@ -562,8 +565,9 @@ impl App {
         };
         let name_hits: HashSet<usize> = view.iter().copied().filter(|&i| by_name(i)).collect();
         // One key per session, so ranking and lowercasing run once each.
-        // Within a group, sessions the search finds by name come before
-        // those it finds only in their conversation text.
+        // Within a group, sessions the search finds by name come first,
+        // then those whose conversation has the words together, then in
+        // one message, then spread out.
         let searching = !terms.is_empty();
         view.sort_by_cached_key(|&i| {
             let s = &self.sessions[i];
@@ -572,10 +576,14 @@ impl App {
                 Sort::Project => (s.project().to_lowercase(), 0),
                 Sort::Size => (String::new(), s.size),
             };
-            let text_only = searching && !name_hits.contains(&i);
+            let strength = match self.text_hits.get(&i) {
+                _ if !searching || name_hits.contains(&i) => search::Score::MAX,
+                Some((score, _)) => *score,
+                None => 0,
+            };
             (
                 self.rank(i),
-                text_only,
+                Reverse(strength),
                 project,
                 Reverse(size),
                 Reverse(s.mtime),
@@ -1176,7 +1184,7 @@ impl App {
             self.redraw = true;
             self.search_progress = (!p.finished).then_some((p.done, p.total));
             for h in p.hits {
-                self.text_hits.insert(h.idx, h.snippet);
+                self.text_hits.insert(h.idx, (h.score, h.snippet));
                 changed = true;
             }
         }
@@ -1515,7 +1523,7 @@ mod tests {
         a.filter = "zebra".into();
         a.rebuild_view();
         assert!(a.view.is_empty());
-        a.text_hits.insert(1, "…a zebra…".into());
+        a.text_hits.insert(1, (1, "…a zebra…".into()));
         a.rebuild_view();
         assert_eq!(titles(&a), ["Bravo"]);
     }
@@ -1529,8 +1537,8 @@ mod tests {
             session("c", "Other", 5),
         ]);
         a.filter = "zebra".into();
-        a.text_hits.insert(1, "a zebra".into());
-        a.text_hits.insert(0, "a zebra".into());
+        a.text_hits.insert(1, (1, "a zebra".into()));
+        a.text_hits.insert(0, (1, "a zebra".into()));
         a.rebuild_view();
         assert_eq!(titles(&a), ["Zebra plan", "Notes"]);
         assert!(a.name_hits.contains(&0) && !a.name_hits.contains(&1));
@@ -1539,6 +1547,21 @@ mod tests {
         a.text_hits.clear();
         a.rebuild_view();
         assert_eq!(titles(&a), ["Notes", "Other", "Zebra plan"]);
+    }
+
+    #[test]
+    fn closer_conversation_matches_rank_higher() {
+        let mut a = app(vec![
+            session("a", "Spread", 0),
+            session("b", "Together", 20),
+            session("c", "One message", 10),
+        ]);
+        a.filter = "entra id".into();
+        a.text_hits.insert(0, (1, "entra".into()));
+        a.text_hits.insert(1, (3, "entra id".into()));
+        a.text_hits.insert(2, (2, "entra and id".into()));
+        a.rebuild_view();
+        assert_eq!(titles(&a), ["Together", "One message", "Spread"]);
     }
 
     #[test]
@@ -2189,7 +2212,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert_eq!(titles(&a), ["Alpha"]);
-        assert_eq!(a.text_hits[&0], "talk about kubernetes");
+        assert_eq!(a.text_hits[&0].1, "talk about kubernetes");
         // A matching session previews in full, with the match current.
         let pane = a.preview_pane(0, 40);
         assert_eq!(pane.current, Some(0));
@@ -2556,14 +2579,14 @@ mod tests {
     fn a_selection_lost_to_a_rebuild_comes_back_with_its_session() {
         let mut a = app(vec![session("a", "Alpha", 0), session("b", "Bravo", 10)]);
         a.filter = "zzz".into();
-        a.text_hits.insert(1, "zzz".into());
+        a.text_hits.insert(1, (1, "zzz".into()));
         a.rebuild_view();
         assert_eq!(a.selected(), Some(1));
         // A reload clears the text hits until the search runs again.
         a.text_hits.clear();
         a.rebuild_view();
-        a.text_hits.insert(0, "zzz".into());
-        a.text_hits.insert(1, "zzz".into());
+        a.text_hits.insert(0, (1, "zzz".into()));
+        a.text_hits.insert(1, (1, "zzz".into()));
         a.rebuild_view();
         assert_eq!(a.selected(), Some(1), "back on Bravo, not row 0");
         // Moving on purpose forgets it.
@@ -2583,7 +2606,7 @@ mod tests {
         a.filter = "needle".into();
         a.rebuild_view();
         a.preview_pane(0, 80);
-        a.text_hits.insert(0, "needle".into());
+        a.text_hits.insert(0, (1, "needle".into()));
         let pane = a.preview_pane(0, 80);
         assert_eq!(pane.r.matches.len(), 2, "the whole transcript");
         assert_eq!(pane.current, Some(1), "still the latest");

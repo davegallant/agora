@@ -16,6 +16,7 @@ pub type Files = Arc<Vec<(usize, Agent, PathBuf)>>;
 
 pub struct Hit {
     pub idx: usize,
+    pub score: Score,
     pub snippet: String,
 }
 
@@ -94,10 +95,38 @@ fn json_form(word: &str) -> Vec<u8> {
     quoted.as_bytes()[1..quoted.len().saturating_sub(1).max(1)].to_vec()
 }
 
-/// Does this transcript's conversation text contain every term? Returns a
-/// snippet around the first term's first match. Whitespace in the text is
-/// collapsed before matching, so a phrase matches across line breaks.
-pub fn search_file(path: &Path, agent: Agent, terms: &[String]) -> Option<String> {
+/// Where `term` first starts a word in `hay`: the character before it, if
+/// any, is not a letter or digit. Only the start is pinned, so a word still
+/// matches while it is being typed (`ide` finds "identity"), but `id` no
+/// longer finds "consider". Both are lowercase already.
+pub fn find_word(hay: &str, term: &str) -> Option<usize> {
+    hay.match_indices(term)
+        .map(|(at, _)| at)
+        .find(|&at| starts_word(hay, at))
+}
+
+/// Does a word start at byte `at` of `hay`?
+pub fn starts_word(hay: &str, at: usize) -> bool {
+    !hay[..at]
+        .chars()
+        .next_back()
+        .is_some_and(char::is_alphanumeric)
+}
+
+/// How well a transcript matches. Higher is better.
+pub type Score = u8;
+/// The terms, in order, as one run of words in one message.
+const TOGETHER: Score = 3;
+/// Every term in one message.
+const ONE_MESSAGE: Score = 2;
+/// Every term, but spread over several messages.
+const SPREAD: Score = 1;
+
+/// Does this transcript's conversation text contain every term, each at
+/// the start of a word? Returns how closely they match and a snippet from
+/// the best message. Whitespace in the text is collapsed before matching,
+/// so a phrase matches across line breaks.
+pub fn search_file(path: &Path, agent: Agent, terms: &[String]) -> Option<(Score, String)> {
     if terms.is_empty() {
         return None;
     }
@@ -113,9 +142,10 @@ pub fn search_file(path: &Path, agent: Agent, terms: &[String]) -> Option<String
     if !words.iter().flatten().all(|w| has(&lower, w)) {
         return None;
     }
+    let together = terms.join(" ");
 
     let mut found: HashSet<usize> = HashSet::new();
-    let mut first: Option<String> = None;
+    let mut best: Option<(Score, String)> = None;
     let mut offset = 0;
     for line in lower.split(|&b| b == b'\n') {
         let range = offset..offset + line.len();
@@ -131,18 +161,34 @@ pub fn search_file(path: &Path, agent: Agent, terms: &[String]) -> Option<String
         };
         let flat = msg.text.split_whitespace().collect::<Vec<_>>().join(" ");
         let flat_lower = flat.to_ascii_lowercase();
-        for (n, t) in terms.iter().enumerate() {
-            if let Some(at) = flat_lower.find(t.as_str()) {
-                if found.insert(n) && first.is_none() {
-                    first = Some(snippet(&flat, at, t.len()));
-                }
+        let at: Vec<Option<usize>> = terms.iter().map(|t| find_word(&flat_lower, t)).collect();
+        found.extend(
+            at.iter()
+                .enumerate()
+                .filter(|(_, a)| a.is_some())
+                .map(|(n, _)| n),
+        );
+        let here = if let Some(p) = find_word(&flat_lower, &together) {
+            Some((TOGETHER, p, together.len()))
+        } else if at.iter().all(Option::is_some) {
+            at[0].map(|p| (ONE_MESSAGE, p, terms[0].len()))
+        } else {
+            let first = at
+                .iter()
+                .zip(terms)
+                .find_map(|(a, t)| a.map(|p| (p, t.len())));
+            first.map(|(p, len)| (SPREAD, p, len))
+        };
+        if let Some((score, p, len)) = here {
+            if best.as_ref().is_none_or(|(b, _)| score > *b) {
+                best = Some((score, snippet(&flat, p, len)));
             }
         }
-        if found.len() == terms.len() {
-            return first;
+        if best.as_ref().is_some_and(|(b, _)| *b == TOGETHER) {
+            break;
         }
     }
-    None
+    (found.len() == terms.len()).then_some(best).flatten()
 }
 
 impl Searcher {
@@ -204,8 +250,12 @@ fn run(req: &Request, latest: &AtomicU64, tx: &Sender<Progress>) -> Result<(), (
                         let Some((idx, agent, path)) = req.files.get(i) else {
                             break;
                         };
-                        if let Some(snippet) = search_file(path, *agent, &req.terms) {
-                            hits.push(Hit { idx: *idx, snippet });
+                        if let Some((score, snippet)) = search_file(path, *agent, &req.terms) {
+                            hits.push(Hit {
+                                idx: *idx,
+                                score,
+                                snippet,
+                            });
                         }
                         let d = done.fetch_add(1, Ordering::SeqCst) + 1;
                         // Stream results in batches so matches show up early.
@@ -269,7 +319,9 @@ mod tests {
     #[test]
     fn matches_conversation_text_only() {
         let p = file("c.jsonl", CLAUDE);
-        let snip = search_file(&p, Agent::Claude, &terms("tfc PLAN")).unwrap();
+        let snip = search_file(&p, Agent::Claude, &terms("tfc PLAN"))
+            .unwrap()
+            .1;
         assert!(snip.contains("TFC plan"), "{snip}");
         // Words match anywhere, even in different messages and any order...
         assert!(search_file(&p, Agent::Claude, &terms("drifted tfc")).is_some());
@@ -279,6 +331,52 @@ mod tests {
         // Tool input is not conversation text.
         assert!(search_file(&p, Agent::Claude, &terms("secret-term")).is_none());
         assert!(search_file(&p, Agent::Claude, &terms("nowhere")).is_none());
+    }
+
+    #[test]
+    fn terms_match_only_at_the_start_of_a_word() {
+        assert_eq!(find_word("consider the id", "id"), Some(13));
+        assert_eq!(
+            find_word("identity", "id"),
+            Some(0),
+            "a prefix still matches"
+        );
+        assert_eq!(find_word("said bidding", "id"), None);
+        assert_eq!(
+            find_word("<task-id>", "id"),
+            Some(6),
+            "punctuation splits words"
+        );
+        assert_eq!(
+            find_word("éid", "id"),
+            None,
+            "letters beyond ASCII join words"
+        );
+        let line =
+            serde_json::json!({"type":"user","message":{"content":"swedencentral is central"}});
+        let p = file("words.jsonl", &format!("{line}\n"));
+        assert!(search_file(&p, Agent::Claude, &terms("entra")).is_none());
+        assert!(search_file(&p, Agent::Claude, &terms("cent")).is_some());
+    }
+
+    #[test]
+    fn words_together_score_above_words_apart() {
+        let msg = |t: &str| serde_json::json!({"type":"user","message":{"content":t}}).to_string();
+        let score = |name: &str, lines: &[&str]| {
+            let body: String = lines.iter().map(|l| msg(l) + "\n").collect();
+            search_file(&file(name, &body), Agent::Claude, &terms("entra id"))
+        };
+        let (s, snip) = score(
+            "sc-together",
+            &["entra here, id there", "moved to Entra ID today"],
+        )
+        .unwrap();
+        assert_eq!((s, snip.as_str()), (TOGETHER, "moved to Entra ID today"));
+        let (s, snip) = score("sc-one", &["about entra", "entra, then an id"]).unwrap();
+        assert_eq!((s, snip.as_str()), (ONE_MESSAGE, "entra, then an id"));
+        let (s, _) = score("sc-spread", &["about entra", "an id"]).unwrap();
+        assert_eq!(s, SPREAD);
+        assert!(score("sc-none", &["about entra", "consider it"]).is_none());
     }
 
     #[test]
@@ -293,7 +391,9 @@ mod tests {
     fn a_phrase_matches_across_line_breaks_and_extra_spaces() {
         let line = serde_json::json!({"type":"user","cwd":"/w","message":{"content":"we should fix  the\nbug today"}});
         let p = file("ws.jsonl", &format!("{line}\n"));
-        let snip = search_file(&p, Agent::Claude, &terms("fix the bug")).unwrap();
+        let snip = search_file(&p, Agent::Claude, &terms("fix the bug"))
+            .unwrap()
+            .1;
         assert!(snip.contains("fix the bug"), "{snip}");
         assert!(search_file(&p, Agent::Claude, &terms("the bug")).is_some());
     }
@@ -418,7 +518,9 @@ mod tests {
                 "\n",
             ),
         );
-        let snip = search_file(&p, Agent::Claude, &terms("alpha beta")).unwrap();
+        let snip = search_file(&p, Agent::Claude, &terms("alpha beta"))
+            .unwrap()
+            .1;
         assert_eq!(snip, "first mentions alpha beta");
     }
 
@@ -433,7 +535,9 @@ mod tests {
                 "\n",
             ),
         );
-        let snip = search_file(&codex, Agent::Codex, &terms("kubernetes")).unwrap();
+        let snip = search_file(&codex, Agent::Codex, &terms("kubernetes"))
+            .unwrap()
+            .1;
         assert_eq!(snip, "Deploy to Kubernetes now");
         // Read as the wrong agent, nothing is conversation text.
         assert!(search_file(&codex, Agent::Pi, &terms("kubernetes")).is_none());

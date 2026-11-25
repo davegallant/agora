@@ -11,10 +11,12 @@ now, and everything you can resume, across **Claude Code**, **Codex** and **pi**
 - **Refreshes as you work.** New sessions appear and busy ones move up on their
   own, and the preview follows a conversation as it is written.
 - **Search** by title, project, path or agent as you type, and through the
-  conversation text itself a moment later. Every word must match, in any
-  order; `"quoted words"` must appear together, across line breaks. Sessions
-  found by name come first, and one found only in its conversation shows the
-  matching passage beside its title. Tool output and file contents don't
+  conversation text itself a moment later. Every word must match the start of
+  a word, in any order (`id` finds "ID" and "identity", not "consider");
+  `"quoted words"` must appear together, across line breaks. Sessions found
+  by name come first, then those whose conversation has the words together,
+  and one found only in its conversation shows the matching passage beside
+  its title. Tool output and file contents don't
   count.
 - **Preview** of the end of the conversation for the selected session.
 - **Git context**: `±` marks a session whose folder has uncommitted changes,

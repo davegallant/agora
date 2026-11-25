@@ -367,11 +367,19 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(Paragraph::new(search_line), search);
 
     let terms = search::terms(&app.filter);
+    let chosen = app.table.selected();
     let rows: Vec<Row> = app
         .view
         .iter()
-        .map(|&i| {
+        .enumerate()
+        .map(|(row, &i)| {
             let s = &app.sessions[i];
+            // Muted text vanishes on the selection's background.
+            let dim = if chosen == Some(row) {
+                t.subtle
+            } else {
+                t.muted
+            };
             let live = app.live.get(&i);
             let title_style = if live.is_some() {
                 Style::new().bold()
@@ -402,7 +410,7 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
                     }
                     spans.push(Span::styled(s.title.clone(), title_style));
                     // Found only in the conversation: show where.
-                    if let Some(snip) = app
+                    if let Some((_, snip)) = app
                         .text_hits
                         .get(&i)
                         .filter(|_| !app.name_hits.contains(&i))
@@ -411,14 +419,14 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
                         spans.extend(highlighted(
                             snip,
                             &terms,
-                            Style::new().fg(t.muted),
+                            Style::new().fg(dim),
                             Style::new().fg(t.accent),
                         ));
                     }
                     spans
                 })),
-                Cell::from(Line::from(size(s.size)).right_aligned().fg(t.muted)),
-                Cell::from(Line::from(age(s.mtime)).right_aligned().fg(t.muted)),
+                Cell::from(Line::from(size(s.size)).right_aligned().fg(dim)),
+                Cell::from(Line::from(age(s.mtime)).right_aligned().fg(dim)),
             ])
         })
         .collect();
@@ -876,7 +884,7 @@ mod tests {
             &["searching conversations 3/10"],
         );
         app.search_progress = None;
-        app.text_hits.insert(0, "…zebra…".into());
+        app.text_hits.insert(0, (1, "…zebra…".into()));
         assert_has(
             &screen(&mut app, 100, 20),
             &["1 match in conversation text"],
@@ -1136,8 +1144,8 @@ mod tests {
             ],
         );
         app.filter = "zebra".into();
-        app.text_hits.insert(0, "we saw a zebra today".into());
-        app.text_hits.insert(1, "zebra again".into());
+        app.text_hits.insert(0, (1, "we saw a zebra today".into()));
+        app.text_hits.insert(1, (1, "zebra again".into()));
         app.rebuild_view();
         let s = screen(&mut app, 100, 20);
         assert_has(&s, &["Alpha  we saw a zebra today"]);
@@ -1153,7 +1161,7 @@ mod tests {
             vec![session("a", "Short", path)],
         );
         app.filter = "elsewhere".into();
-        app.text_hits.insert(0, "…elsewhere…".into());
+        app.text_hits.insert(0, (1, "…elsewhere…".into()));
         assert_has(&screen(&mut app, 80, 20), &["no match shown"]);
     }
 
