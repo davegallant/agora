@@ -21,6 +21,10 @@ All notable changes to agora. The format follows
 
 ### Changed
 
+- Search matches every word in any order, in titles and conversation text
+  alike; put words in quotes to match them as a phrase. Sessions found by
+  name list before those found only in their conversation, which show the
+  matching passage beside the title.
 - `esc` no longer quits. It clears the search, then the channel, agent and
   live-only filters, one per press; `q` quits.
 - Opening a long conversation (`v`, or a conversation-search hit) no longer

@@ -16,7 +16,7 @@ use ratatui::layout::{Position, Rect};
 use ratatui::widgets::TableState;
 use ratatui::DefaultTerminal;
 use std::cmp::Reverse;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{Receiver, Sender};
@@ -144,6 +144,9 @@ pub struct App {
     pub picking_channel: Option<Option<String>>,
     /// Sessions the search matches in channels other than the one shown.
     pub elsewhere: usize,
+    /// Sessions in the view the search matches by name (title, project,
+    /// folder, channel or agent), not only by conversation text.
+    pub name_hits: HashSet<usize>,
     /// Something on screen changed since the last draw.
     redraw: bool,
 }
@@ -296,6 +299,7 @@ impl App {
             full_kept: Vec::new(),
             picking_channel: None,
             elsewhere: 0,
+            name_hits: HashSet::new(),
             redraw: true,
         };
         app.index_sessions();
@@ -536,16 +540,16 @@ impl App {
 
     pub fn rebuild_view(&mut self) {
         let keep = self.selected();
-        let terms: Vec<String> = self
-            .filter
-            .to_lowercase()
-            .split_whitespace()
-            .map(String::from)
+        // The same terms as the conversation search, lowercased as the
+        // haystacks are.
+        let terms: Vec<String> = search::terms(&self.filter)
+            .iter()
+            .map(|t| t.to_lowercase())
             .collect();
-        let matches = |i: usize| {
-            terms.iter().all(|t| self.haystacks[i].contains(t.as_str()))
-                || self.text_hits.contains_key(&i)
+        let by_name = |i: usize| {
+            !terms.is_empty() && terms.iter().all(|t| self.haystacks[i].contains(t.as_str()))
         };
+        let matches = |i: usize| terms.is_empty() || by_name(i) || self.text_hits.contains_key(&i);
         let mut view: Vec<usize> = (0..self.sessions.len())
             .filter(|&i| self.in_scope(i) && matches(i))
             .collect();
@@ -556,7 +560,11 @@ impl App {
                 .count(),
             _ => 0,
         };
+        let name_hits: HashSet<usize> = view.iter().copied().filter(|&i| by_name(i)).collect();
         // One key per session, so ranking and lowercasing run once each.
+        // Within a group, sessions the search finds by name come before
+        // those it finds only in their conversation text.
+        let searching = !terms.is_empty();
         view.sort_by_cached_key(|&i| {
             let s = &self.sessions[i];
             let (project, size) = match self.sort {
@@ -564,8 +572,16 @@ impl App {
                 Sort::Project => (s.project().to_lowercase(), 0),
                 Sort::Size => (String::new(), s.size),
             };
-            (self.rank(i), project, Reverse(size), Reverse(s.mtime))
+            let text_only = searching && !name_hits.contains(&i);
+            (
+                self.rank(i),
+                text_only,
+                project,
+                Reverse(size),
+                Reverse(s.mtime),
+            )
         });
+        self.name_hits = name_hits;
         self.view = view;
         let found = |p: &PathBuf| self.view.iter().position(|&i| self.sessions[i].path == *p);
         let pos = match self.lost.as_ref().and_then(found) {
@@ -1505,6 +1521,44 @@ mod tests {
     }
 
     #[test]
+    fn name_matches_rank_above_text_only_matches() {
+        // Notes, found only in its text, is newer than Zebra plan.
+        let mut a = app(vec![
+            session("a", "Zebra plan", 10),
+            session("b", "Notes", 0),
+            session("c", "Other", 5),
+        ]);
+        a.filter = "zebra".into();
+        a.text_hits.insert(1, "a zebra".into());
+        a.text_hits.insert(0, "a zebra".into());
+        a.rebuild_view();
+        assert_eq!(titles(&a), ["Zebra plan", "Notes"]);
+        assert!(a.name_hits.contains(&0) && !a.name_hits.contains(&1));
+        // With no search, recency alone orders the list.
+        a.filter.clear();
+        a.text_hits.clear();
+        a.rebuild_view();
+        assert_eq!(titles(&a), ["Notes", "Other", "Zebra plan"]);
+    }
+
+    #[test]
+    fn list_filter_takes_words_in_any_order_or_quoted_phrases() {
+        let mut a = app(vec![
+            session("a", "Fix login bug", 0),
+            session("b", "Bug in login fix", 1),
+        ]);
+        for (f, want) in [
+            ("bug fix", vec!["Fix login bug", "Bug in login fix"]),
+            ("\"login bug\"", vec!["Fix login bug"]),
+            ("\"login bug", vec!["Fix login bug"]),
+        ] {
+            a.filter = f.into();
+            a.rebuild_view();
+            assert_eq!(titles(&a), want, "filter {f:?}");
+        }
+    }
+
+    #[test]
     fn c_cycles_channels_configured_first_then_by_recency() {
         let mut a = app(vec![
             with(Agent::Claude, "a", "Fold", "/home/d/scratch", 0),
@@ -2351,7 +2405,7 @@ mod tests {
         let mut a = app(vec![on_disk(&dir, "s", "S", &lines)]);
         press(&mut a, KeyCode::Char('v'));
         press(&mut a, KeyCode::Char('/'));
-        typed(&mut a, "very first");
+        typed(&mut a, "\"very first\"");
         press(&mut a, KeyCode::Enter);
         assert_eq!(
             a.preview_pane(0, 80).r.matches.len(),

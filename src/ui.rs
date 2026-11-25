@@ -366,6 +366,7 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
     };
     f.render_widget(Paragraph::new(search_line), search);
 
+    let terms = search::terms(&app.filter);
     let rows: Vec<Row> = app
         .view
         .iter()
@@ -394,13 +395,27 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
                         Style::new().fg(t.subtle),
                     )],
                 })),
-                Cell::from(Line::from(if app.is_pinned(i) {
-                    vec![
-                        Span::styled("★ ", Style::new().fg(t.accent)),
-                        Span::styled(s.title.clone(), title_style),
-                    ]
-                } else {
-                    vec![Span::styled(s.title.clone(), title_style)]
+                Cell::from(Line::from({
+                    let mut spans = Vec::new();
+                    if app.is_pinned(i) {
+                        spans.push(Span::styled("★ ", Style::new().fg(t.accent)));
+                    }
+                    spans.push(Span::styled(s.title.clone(), title_style));
+                    // Found only in the conversation: show where.
+                    if let Some(snip) = app
+                        .text_hits
+                        .get(&i)
+                        .filter(|_| !app.name_hits.contains(&i))
+                    {
+                        spans.push(Span::raw("  "));
+                        spans.extend(highlighted(
+                            snip,
+                            &terms,
+                            Style::new().fg(t.muted),
+                            Style::new().fg(t.accent),
+                        ));
+                    }
+                    spans
                 })),
                 Cell::from(Line::from(size(s.size)).right_aligned().fg(t.muted)),
                 Cell::from(Line::from(age(s.mtime)).right_aligned().fg(t.muted)),
@@ -427,6 +442,23 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
             table_area,
         );
     }
+}
+
+/// `text` in `base`, with every match of `terms` in `hit`.
+fn highlighted(text: &str, terms: &[String], base: Style, hit: Style) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    let mut at = 0;
+    for (s, e) in crate::preview::find_ranges(text, terms) {
+        if s > at {
+            spans.push(Span::styled(text[at..s].to_string(), base));
+        }
+        spans.push(Span::styled(text[s..e].to_string(), hit));
+        at = e;
+    }
+    if at < text.len() {
+        spans.push(Span::styled(text[at..].to_string(), base));
+    }
+    spans
 }
 
 fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
@@ -1089,9 +1121,28 @@ mod tests {
         assert_has(&s, &[" 1/40 ", "▶ question 0 "]);
         // The scrollbar ticks every match and marks the current one.
         assert_has(&s, &["━", "◆"]);
-        // The filter matches as one phrase: question 1 and 10-19.
-        app.filter = "question 1".into();
+        // A quoted phrase: question 1 and 10-19.
+        app.filter = "\"question 1\"".into();
         assert_has(&screen(&mut app, 80, 24), &[" 11/11 "]);
+    }
+
+    #[test]
+    fn text_only_hits_show_their_snippet_in_the_list() {
+        let mut app = App::new(
+            PathBuf::from("/nonexistent"),
+            vec![
+                session("a", "Alpha", PathBuf::from("/nonexistent/a")),
+                session("b", "Zebra talk", PathBuf::from("/nonexistent/b")),
+            ],
+        );
+        app.filter = "zebra".into();
+        app.text_hits.insert(0, "we saw a zebra today".into());
+        app.text_hits.insert(1, "zebra again".into());
+        app.rebuild_view();
+        let s = screen(&mut app, 100, 20);
+        assert_has(&s, &["Alpha  we saw a zebra today"]);
+        // A session found by name needs no snippet.
+        assert!(!s.contains("zebra again"), "{s}");
     }
 
     #[test]

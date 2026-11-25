@@ -39,16 +39,24 @@ pub struct Searcher {
     current: Arc<AtomicU64>,
 }
 
-/// Search terms: the whole query as one lowercase phrase, so "redis cache"
-/// matches those words together, not each word on its own. Runs of
-/// whitespace collapse to one space.
+/// Search terms, lowercase: each word on its own, so `redis timeout` matches
+/// both words anywhere, in any order. `"redis cache"` in quotes is one
+/// phrase whose words must appear together; an unclosed quote runs to the
+/// end. Runs of whitespace inside a phrase collapse to one space.
 pub fn terms(query: &str) -> Vec<String> {
-    let phrase = query.split_whitespace().collect::<Vec<_>>().join(" ");
-    if phrase.is_empty() {
-        Vec::new()
-    } else {
-        vec![phrase.to_ascii_lowercase()]
+    let mut out = Vec::new();
+    for (n, part) in query.split('"').enumerate() {
+        if n % 2 == 1 {
+            let phrase = part.split_whitespace().collect::<Vec<_>>().join(" ");
+            if !phrase.is_empty() {
+                out.push(phrase.to_ascii_lowercase());
+            }
+        } else {
+            out.extend(part.split_whitespace().map(str::to_ascii_lowercase));
+        }
     }
+    out.dedup();
+    out
 }
 
 fn floor_boundary(s: &str, mut i: usize) -> usize {
@@ -65,9 +73,10 @@ fn ceil_boundary(s: &str, mut i: usize) -> usize {
     i
 }
 
-/// One line of context around byte offset `at` in `text`.
+/// One line of context around byte offset `at` in `text`. Little comes
+/// before the match, so it stays visible in a narrow list column.
 fn snippet(text: &str, at: usize, len: usize) -> String {
-    let start = floor_boundary(text, at.saturating_sub(60));
+    let start = floor_boundary(text, at.saturating_sub(24));
     let end = ceil_boundary(text, (at + len + 80).min(text.len()));
     let body = text[start..end]
         .split_whitespace()
@@ -262,8 +271,11 @@ mod tests {
         let p = file("c.jsonl", CLAUDE);
         let snip = search_file(&p, Agent::Claude, &terms("tfc PLAN")).unwrap();
         assert!(snip.contains("TFC plan"), "{snip}");
-        // The query is one phrase: its words must appear together.
-        assert!(search_file(&p, Agent::Claude, &terms("drifted tfc")).is_none());
+        // Words match anywhere, even in different messages and any order...
+        assert!(search_file(&p, Agent::Claude, &terms("drifted tfc")).is_some());
+        // ...but a quoted phrase must appear as written.
+        assert!(search_file(&p, Agent::Claude, &terms("\"drifted tfc\"")).is_none());
+        assert!(search_file(&p, Agent::Claude, &terms("\"the plan\" drifted")).is_some());
         // Tool input is not conversation text.
         assert!(search_file(&p, Agent::Claude, &terms("secret-term")).is_none());
         assert!(search_file(&p, Agent::Claude, &terms("nowhere")).is_none());
@@ -334,8 +346,11 @@ mod tests {
     }
 
     #[test]
-    fn terms_are_one_lowercase_phrase() {
-        assert_eq!(terms("  Foo   BAR\tbaz "), ["foo bar baz"]);
+    fn terms_are_lowercase_words_and_quoted_phrases() {
+        assert_eq!(terms("  Foo   BAR\tbaz "), ["foo", "bar", "baz"]);
+        assert_eq!(terms(r#"a "Redis   Cache" b"#), ["a", "redis cache", "b"]);
+        assert_eq!(terms(r#"x "open phrase"#), ["x", "open phrase"]);
+        assert_eq!(terms(r#""" "  " y"#), ["y"]);
         assert!(terms("").is_empty());
         assert!(terms("   ").is_empty());
         // Only ASCII is folded, matching the byte search.
