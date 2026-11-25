@@ -212,6 +212,12 @@ fn haystack(s: &Session, channel: &str) -> String {
     .to_lowercase()
 }
 
+/// `ctrl-w`: drop the last word of `s` and the spaces after it.
+fn delete_word(s: &mut String) {
+    let kept = s.trim_end().trim_end_matches(|c: char| !c.is_whitespace());
+    s.truncate(kept.len());
+}
+
 /// Is `name` a program on `$PATH`?
 fn on_path(name: &str) -> bool {
     std::env::var_os("PATH")
@@ -854,6 +860,7 @@ impl App {
                     r.query.pop();
                 }
                 KeyCode::Char('u') if ctrl => r.query.clear(),
+                KeyCode::Char('w') if ctrl => delete_word(&mut r.query),
                 KeyCode::Char(c) if !ctrl => r.query.push(c),
                 _ => {}
             }
@@ -1057,6 +1064,7 @@ impl App {
                     self.filter.pop();
                 }
                 KeyCode::Char('u') if ctrl => self.filter.clear(),
+                KeyCode::Char('w') if ctrl => delete_word(&mut self.filter),
                 KeyCode::Char(c) if !ctrl => self.filter.push(c),
                 _ => return None,
             }
@@ -1801,6 +1809,34 @@ mod tests {
         // ctrl-c quits even while typing a filter.
         press(&mut a, KeyCode::Char('/'));
         assert!(quits(ctrl(&mut a, 'c')));
+    }
+
+    #[test]
+    fn ctrl_w_deletes_a_word() {
+        for (from, want) in [
+            ("entra id", "entra "),
+            ("entra id  ", "entra "),
+            ("entra", ""),
+            ("", ""),
+            ("   ", ""),
+            ("\"redis cache", "\"redis "),
+        ] {
+            let mut s = from.to_string();
+            delete_word(&mut s);
+            assert_eq!(s, want, "{from:?}");
+        }
+        let mut a = five();
+        press(&mut a, KeyCode::Char('/'));
+        typed(&mut a, "foo bar");
+        ctrl(&mut a, 'w');
+        assert_eq!(a.filter, "foo ");
+        assert!(a.filtering);
+        press(&mut a, KeyCode::Esc);
+        press(&mut a, KeyCode::Char('v'));
+        press(&mut a, KeyCode::Char('/'));
+        typed(&mut a, "baz qux");
+        ctrl(&mut a, 'w');
+        assert_eq!(a.reading.as_ref().unwrap().query, "baz ");
     }
 
     #[test]

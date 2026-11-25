@@ -6,6 +6,10 @@ All notable changes to agora. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `ctrl-w` deletes the last word of a search; `ctrl-u` clears it, as before.
+
 ## [0.6.0] - 2026-11-25
 
 ### Added

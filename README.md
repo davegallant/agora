@@ -58,7 +58,7 @@ Other terminals don't have these yet.
 | `x` | close a live session: its Ghostty split or tab, or `claude stop` for a background one; press twice to confirm |
 | `y` `Y` | copy the resume command / the project path |
 | `d` | review the session folder's changes in [hunk](https://github.com/modem-dev/hunk) (`git diff` without it); agora returns after |
-| `/` | search titles and conversation text; `esc` clears |
+| `/` | search titles and conversation text; `ctrl-w` deletes a word, `ctrl-u` or `esc` clears |
 | `c` `C` | next / previous channel; back to all after the last |
 | `#` | pick a channel from a list with session counts: `j`/`k` try one, `enter` keeps it, `esc` cancels |
 | `tab` | cycle agent: all, claude, codex, pi |
