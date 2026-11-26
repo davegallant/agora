@@ -10,6 +10,11 @@ All notable changes to agora. The format follows
 
 - `ctrl-w` deletes the last word of a search; `ctrl-u` clears it, as before.
 
+### Changed
+
+- The preview pane is hidden at start, so the list fills the screen; `i` shows
+  or hides it.
+
 ## [0.6.0] - 2026-11-25
 
 ### Added

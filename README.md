@@ -9,7 +9,7 @@ now, and everything you can resume, across **Claude Code**, **Codex** and **pi**
   working or open.
 - **History underneath**, newest first.
 - **Refreshes as you work.** New sessions appear and busy ones move up on their
-  own, and the preview follows a conversation as it is written.
+  own, and the preview (`i`) follows a conversation as it is written.
 - **Search** by title, project, path or agent as you type, and through the
   conversation text itself a moment later. Every word must match the start of
   a word, in any order (`id` finds "ID" and "identity", not "consider");
@@ -18,7 +18,8 @@ now, and everything you can resume, across **Claude Code**, **Codex** and **pi**
   and one found only in its conversation shows the matching passage beside
   its title. Tool output and file contents don't
   count.
-- **Preview** of the end of the conversation for the selected session.
+- **Preview** of the end of the conversation for the selected session, shown
+  under the list with `i`.
 - **Git context**: `±` marks a session whose folder has uncommitted changes,
   and the preview shows its branch and how far it is ahead of or behind.
 - **Enter** attaches to a running background Claude agent, or resumes the
@@ -55,6 +56,7 @@ Other terminals don't have these yet.
 | `enter` | attach / resume here (jump to tab in Ghostty) |
 | `t` | resume (or attach) in a new tab (Ghostty only) |
 | `v` | read the whole conversation full-screen: `/` searches it, `n`/`N` jump, `esc` closes |
+| `i` | show / hide the preview under the list: `J`/`K` scroll it, `n`/`N` jump between search matches |
 | `x` | close a live session: its Ghostty split or tab, or `claude stop` for a background one; press twice to confirm |
 | `y` `Y` | copy the resume command / the project path |
 | `d` | review the session folder's changes in [hunk](https://github.com/modem-dev/hunk) (`git diff` without it); agora returns after |

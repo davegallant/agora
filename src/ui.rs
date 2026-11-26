@@ -34,8 +34,11 @@ pub const KEYS: &[(&str, &str)] = &[
         "/",
         "search titles and conversation text; ctrl-w deletes a word, ctrl-u or esc clears",
     ),
+    (
+        "i",
+        "show / hide the preview; J K scroll it (ctrl-f / ctrl-b by page)",
+    ),
     ("n N", "next / previous match in the preview"),
-    ("J K", "scroll the preview (ctrl-f / ctrl-b by page)"),
     (
         "j k ↑ ↓",
         "move (g / G first / last, ctrl-d / ctrl-u by page)",
@@ -159,13 +162,17 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         app.list_area = Rect::default();
         app.preview_area = main;
         draw_preview(f, app, main);
-    } else {
+    } else if app.previewing {
         let [list, preview] =
             Layout::vertical([Constraint::Percentage(45), Constraint::Percentage(55)]).areas(main);
         app.list_area = list;
         app.preview_area = preview;
         draw_list(f, app, list);
         draw_preview(f, app, preview);
+    } else {
+        app.list_area = main;
+        app.preview_area = Rect::default();
+        draw_list(f, app, main);
     }
     draw_footer(f, app, footer);
     if app.picking_theme.is_some() {
@@ -701,6 +708,7 @@ mod tests {
             size: 240 * 1024,
         }];
         let mut app = App::new(PathBuf::from("/nonexistent"), sessions);
+        app.previewing = true;
         let mut term = Terminal::new(TestBackend::new(120, 20)).unwrap();
         term.draw(|f| super::draw(f, &mut app)).unwrap();
         let screen: String = term
@@ -829,6 +837,7 @@ mod tests {
     #[test]
     fn no_sessions() {
         let mut app = App::new(PathBuf::from("/nonexistent"), Vec::new());
+        app.previewing = true;
         let s = screen(&mut app, 80, 20);
         assert_has(
             &s,
@@ -900,6 +909,7 @@ mod tests {
             PathBuf::from("/nonexistent"),
             vec![session("a", "Alpha", PathBuf::from("/nonexistent/a"))],
         );
+        app.previewing = true;
         app.pins.toggle(Agent::Claude, "a");
         app.rebuild_view();
         let s = screen(&mut app, 100, 20);
@@ -957,6 +967,7 @@ mod tests {
             PathBuf::from("/nonexistent"),
             vec![session("a", "Alpha", PathBuf::from("/nonexistent/a"))],
         );
+        app.previewing = true;
         let s = screen(&mut app, 100, 20);
         assert_has(&s, &["claude · just now · /w/proj"]);
         assert!(!s.contains("now ago"), "{s}");
@@ -1038,6 +1049,7 @@ mod tests {
             PathBuf::from("/nonexistent"),
             vec![session("a", "Alpha", PathBuf::from("/nonexistent/a"))],
         );
+        app.previewing = true;
         let cases = [
             (
                 State::NeedsYou,
@@ -1101,6 +1113,7 @@ mod tests {
             PathBuf::from("/nonexistent"),
             vec![session("a", "Long", path)],
         );
+        app.previewing = true;
         let s = screen(&mut app, 80, 24);
         assert_has(&s, &["question 39", " 100% "]);
         assert!(!s.contains("▌ question 0 "), "{s}");
@@ -1123,6 +1136,7 @@ mod tests {
             PathBuf::from("/nonexistent"),
             vec![session("a", "Long", path)],
         );
+        app.previewing = true;
         app.filter = "question".into();
         let s = screen(&mut app, 80, 24);
         assert_has(&s, &[" 40/40 ", " n/N ", "question 39"]);
@@ -1163,6 +1177,7 @@ mod tests {
             PathBuf::from("/nonexistent"),
             vec![session("a", "Short", path)],
         );
+        app.previewing = true;
         app.filter = "elsewhere".into();
         app.text_hits.insert(0, (1, "…elsewhere…".into()));
         assert_has(&screen(&mut app, 80, 20), &["no match shown"]);
@@ -1195,6 +1210,20 @@ mod tests {
         let s: String = buf.content().iter().map(|c| c.symbol()).collect();
         assert_has(&s, &[" theme ", "▶ tokyo-night", "monokai", "esc cancel"]);
         assert_eq!(buf[(0, 0)].bg, app.theme().bg.unwrap());
+    }
+
+    #[test]
+    fn the_preview_is_hidden_until_i() {
+        let path = long_transcript("hidden", 3);
+        let mut app = App::new(
+            PathBuf::from("/nonexistent"),
+            vec![session("a", "Long", path)],
+        );
+        let s = screen(&mut app, 80, 24);
+        assert!(!s.contains(" preview "), "{s}");
+        assert!(!s.contains("question 2"), "{s}");
+        app.previewing = true;
+        assert_has(&screen(&mut app, 80, 24), &["question 2"]);
     }
 
     #[test]
