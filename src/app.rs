@@ -1355,6 +1355,7 @@ mod tests {
             title: title.into(),
             mtime: SystemTime::now() - Duration::from_secs(age_secs),
             size: 0,
+            last_prompt: String::new(),
         }
     }
 

@@ -7,7 +7,8 @@ now, and everything you can resume, across **Claude Code**, **Codex** and **pi**
 
 - **Live at the top.** Sessions that need you come first, then ones that are
   working or open.
-- **History underneath**, newest first.
+- **History underneath**, newest first, each with its latest prompt beside
+  the title.
 - **Refreshes as you work.** New sessions appear and busy ones move up on their
   own, and the preview (`i`) follows a conversation as it is written.
 - **Search** by title, project, path or agent as you type, and through the

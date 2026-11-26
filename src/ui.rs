@@ -432,6 +432,14 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
                             Style::new().fg(dim),
                             Style::new().fg(t.accent),
                         ));
+                    } else if !s.last_prompt.is_empty() && s.last_prompt != s.title {
+                        // Where the conversation got to, under a title
+                        // that is often its first prompt.
+                        spans.push(Span::raw("  "));
+                        spans.push(Span::styled(
+                            format!("› {}", s.last_prompt),
+                            Style::new().fg(dim),
+                        ));
                     }
                     spans
                 })),
@@ -706,6 +714,7 @@ mod tests {
             title: "Fix the login bug".into(),
             mtime: SystemTime::now(),
             size: 240 * 1024,
+            last_prompt: String::new(),
         }];
         let mut app = App::new(PathBuf::from("/nonexistent"), sessions);
         app.previewing = true;
@@ -747,6 +756,7 @@ mod tests {
             title: title.into(),
             mtime: SystemTime::now(),
             size: 0,
+            last_prompt: String::new(),
         }
     }
 
@@ -1149,6 +1159,18 @@ mod tests {
         // A quoted phrase: question 1 and 10-19.
         app.filter = "\"question 1\"".into();
         assert_has(&screen(&mut app, 80, 24), &[" 11/11 "]);
+    }
+
+    #[test]
+    fn the_list_shows_the_last_prompt_unless_it_is_the_title() {
+        let mut a = session("a", "Alpha", PathBuf::from("/nonexistent/a"));
+        a.last_prompt = "ship it".into();
+        let mut b = session("b", "Beta", PathBuf::from("/nonexistent/b"));
+        b.last_prompt = "Beta".into();
+        let mut app = App::new(PathBuf::from("/nonexistent"), vec![a, b]);
+        let s = screen(&mut app, 100, 20);
+        assert_has(&s, &["Alpha  › ship it"]);
+        assert!(!s.contains("› Beta"), "{s}");
     }
 
     #[test]

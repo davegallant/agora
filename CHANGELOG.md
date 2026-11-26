@@ -9,6 +9,7 @@ All notable changes to agora. The format follows
 ### Added
 
 - `ctrl-w` deletes the last word of a search; `ctrl-u` clears it, as before.
+- The list shows each session's latest prompt in grey after its title.
 
 ### Changed
 

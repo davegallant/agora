@@ -59,6 +59,8 @@ pub struct Session {
     pub mtime: SystemTime,
     /// The transcript's size in bytes.
     pub size: u64,
+    /// The latest prompt found in the transcript's tail; empty when none.
+    pub last_prompt: String,
 }
 
 impl Session {
@@ -140,6 +142,25 @@ fn read_last_lines(path: &Path) -> std::io::Result<String> {
     }
 }
 
+/// The latest prompt in `tail`: Claude's own `last-prompt` record, else the
+/// last user message.
+fn last_prompt(agent: Agent, tail: &str) -> String {
+    let mut out = String::new();
+    for v in json_lines(tail) {
+        let t = if agent == Agent::Claude && v["type"] == "last-prompt" {
+            v["lastPrompt"].as_str().map(clean)
+        } else {
+            message_of(agent, &v)
+                .filter(|m| m.user)
+                .map(|m| clean(&m.text))
+        };
+        if let Some(t) = t.filter(|t| !is_noise(t)) {
+            out = t;
+        }
+    }
+    out
+}
+
 fn json_lines(s: &str) -> impl Iterator<Item = Value> + '_ {
     s.lines().filter_map(|l| serde_json::from_str(l).ok())
 }
@@ -217,8 +238,10 @@ fn parse_claude(path: &Path, mtime: SystemTime) -> Option<Session> {
     }
     // Claude rewrites its title as the conversation goes; the latest wins.
     let mut dir = last_dir(Agent::Claude, &head);
+    let mut last = String::new();
     if let Ok(tail) = read_last_lines(path) {
         dir = last_dir(Agent::Claude, &tail).or(dir);
+        last = last_prompt(Agent::Claude, &tail);
         for v in json_lines(&tail) {
             if v["type"] == "ai-title" {
                 if let Some(t) = v["aiTitle"].as_str().map(clean).filter(|t| !t.is_empty()) {
@@ -239,6 +262,7 @@ fn parse_claude(path: &Path, mtime: SystemTime) -> Option<Session> {
         title: title.or(prompt).unwrap_or_else(|| "(no prompt)".into()),
         mtime,
         size: 0,
+        last_prompt: last,
     })
 }
 
@@ -276,10 +300,8 @@ fn parse_codex(
     }
     let id = id?;
     let cwd = cwd?;
-    let dir = read_last_lines(path)
-        .ok()
-        .and_then(|t| last_dir(Agent::Codex, &t))
-        .unwrap_or_else(|| cwd.clone());
+    let tail = read_last_lines(path).unwrap_or_default();
+    let dir = last_dir(Agent::Codex, &tail).unwrap_or_else(|| cwd.clone());
     let title = titles
         .get(&id)
         .cloned()
@@ -294,6 +316,7 @@ fn parse_codex(
         title,
         mtime,
         size: 0,
+        last_prompt: last_prompt(Agent::Codex, &tail),
     })
 }
 
@@ -325,6 +348,9 @@ fn parse_pi(path: &Path, mtime: SystemTime) -> Option<Session> {
         title: prompt.unwrap_or_else(|| "(no prompt)".into()),
         mtime,
         size: 0,
+        last_prompt: read_last_lines(path)
+            .map(|t| last_prompt(Agent::Pi, &t))
+            .unwrap_or_default(),
     })
 }
 
@@ -604,6 +630,30 @@ mod tests {
     }
 
     #[test]
+    fn last_prompt_comes_from_the_tail() {
+        let p = tmp(
+            "last.jsonl",
+            &[
+                r#"{"type":"user","cwd":"/w","message":{"content":"first"}}"#,
+                r#"{"type":"user","cwd":"/w","message":{"content":"second\n ask"}}"#,
+                r#"{"type":"user","cwd":"/w","message":{"content":"<system-reminder>x"}}"#,
+            ],
+        );
+        let s = parse_claude(&p, SystemTime::UNIX_EPOCH).unwrap();
+        assert_eq!(s.last_prompt, "second ask");
+        // Claude's own record wins over the messages around it.
+        let p = tmp(
+            "last-record.jsonl",
+            &[
+                r#"{"type":"user","cwd":"/w","message":{"content":"first"}}"#,
+                r#"{"type":"last-prompt","lastPrompt":"latest ask"}"#,
+            ],
+        );
+        let s = parse_claude(&p, SystemTime::UNIX_EPOCH).unwrap();
+        assert_eq!(s.last_prompt, "latest ask");
+    }
+
+    #[test]
     fn codex_uses_index_title_and_skips_subagents() {
         let p = tmp(
             "rollout-x.jsonl",
@@ -622,6 +672,7 @@ mod tests {
         assert_eq!(s.title, "Reply hi");
         assert_eq!(s.resume_argv(), ["codex", "resume", "cx1"]);
         assert_eq!(preview(&s, 10, false).len(), 2);
+        assert_eq!(s.last_prompt, "reply hi");
 
         let sub = tmp(
             "rollout-sub.jsonl",
@@ -704,6 +755,7 @@ mod tests {
             title: String::new(),
             mtime: SystemTime::UNIX_EPOCH,
             size: 0,
+            last_prompt: String::new(),
         }
     }
 

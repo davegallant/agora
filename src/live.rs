@@ -276,6 +276,7 @@ mod tests {
             title: title.into(),
             mtime: SystemTime::UNIX_EPOCH,
             size: 0,
+            last_prompt: String::new(),
         }
     }
 
