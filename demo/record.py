@@ -8,6 +8,7 @@ what a Kitty user sees. Needs Linux with Xvfb, kitty, xdotool and ffmpeg; the
 demo workflow installs them. The keystrokes below are the whole demo; edit
 SCRIPT to change it.
 """
+import json
 import os
 import subprocess
 import sys
@@ -21,7 +22,7 @@ FPS = 20
 
 # (seconds to wait first, keys to send)
 SCRIPT = [
-    (1.2, ""),         # let the first live snapshot land
+    (0.4, ""),
     (0.4, "/"),        # search straight away
     *[(0.07, c) for c in "redis cache"],
     (1.6, ""),         # matches found in conversation text
@@ -75,6 +76,7 @@ def main():
     tmp = Path(tempfile.mkdtemp())
     sock = tmp / "kitty.sock"
     status = tmp / "status"
+    go = tmp / "go"
     log = tmp / "kitty.log"
 
     xvfb = subprocess.Popen(
@@ -114,7 +116,10 @@ def main():
         ["kitty", "--config", "NONE", "--class", "agora-demo",
          "--listen-on", f"unix:{sock}", "--directory", str(home),
          *[a for k, v in options.items() for a in ("-o", f"{k}={v}")],
-         "sh", "-c", f'"{binary}"; echo $? > "{status}"'],
+         # agora waits for `go`: it starts once the window has its full
+         # size, so it never redraws (and drops its images) on a resize.
+         "sh", "-c",
+         f'while [ ! -e "{go}" ]; do sleep 0.05; done; "{binary}"; echo $? > "{status}"'],
         env=env, stdout=subprocess.DEVNULL, stderr=log.open("w"))
 
     def geometry():
@@ -124,19 +129,20 @@ def main():
         g = dict(l.split("=", 1) for l in r.stdout.split() if "=" in l)
         return g if "WIDTH" in g else None
 
-    # Kitty maps a small window first, then grows it to COLS x ROWS: wait
-    # until two readings half a second apart agree.
-    last = {}
+    def full_size():
+        r = subprocess.run(["kitty", "@", "--to", f"unix:{sock}", "ls"],
+                           env=x, capture_output=True, text=True)
+        if r.returncode != 0:
+            return None
+        win = json.loads(r.stdout)[0]["tabs"][0]["windows"][0]
+        return True if (win["columns"], win["lines"]) == (COLS, ROWS) else None
 
-    def settled():
-        nonlocal last
-        g = geometry()
-        time.sleep(0.5)
-        same = g is not None and g == last
-        last = g or {}
-        return g if same else None
-
-    g = wait_for("the kitty window to settle", settled)
+    # Kitty maps a small window first, then grows it to COLS x ROWS.
+    wait_for("the kitty window to reach full size", full_size)
+    time.sleep(0.3)
+    g = wait_for("the kitty window", geometry)
+    go.touch()
+    time.sleep(1.0)  # agora's first frames, off camera
     # Even sizes, which the GIF encoder and players prefer.
     w, h = int(g["WIDTH"]) // 2 * 2, int(g["HEIGHT"]) // 2 * 2
     ffmpeg = subprocess.Popen(
