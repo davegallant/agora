@@ -7,10 +7,12 @@ invented so the README recording never shows anyone's actual sessions.
 usage: seed.py <fake-home>
 """
 import json
+import random
 import os
 import shutil
 import sys
 import time
+import uuid
 from pathlib import Path
 
 HOME = Path(sys.argv[1]).resolve()
@@ -85,6 +87,83 @@ SESSIONS = [
      ]),
 ]
 
+# A long tail of older sessions, so search has a real corpus to dig through:
+# months of made-up history, each a long back-and-forth. Seeded, so every
+# recording finds the same matches.
+TAIL_PROJECTS = {
+    "webshop": ["Cart page loads slowly on mobile", "Add gift card support",
+                "Move sessions off the database", "Fix double-charge on retry",
+                "Paginate the order history", "Upgrade to Django 5"],
+    "payments": ["Reconcile Stripe payouts nightly", "Handle SCA for EU cards",
+                 "Idempotency keys for refunds", "Retry failed webhooks with backoff"],
+    "api-gateway": ["Per-tenant rate limits", "Cache JWKS keys", "Add request IDs to logs",
+                    "Circuit breaker for the search service", "gRPC health checks"],
+    "infra": ["Autoscale the worker pool", "Move CI runners to spot instances",
+              "Postgres major version upgrade", "Split the monolith's Helm chart",
+              "Cut NAT gateway costs", "Back up the Redis cluster"],
+    "analytics": ["Backfill last year's events", "Dedupe the clickstream table",
+                  "Materialize the funnel view", "Speed up the cohort query"],
+    "mobile-app": ["Offline mode for the catalog", "Crash on Android 15 launch",
+                   "Push notification opt-in flow", "Shrink the app bundle"],
+    "search": ["Reindex without downtime", "Typo tolerance for product search",
+               "Boost in-stock products", "Shard the catalog index"],
+    "notifications": ["Batch email digests", "Unsubscribe links per category",
+                      "Retry SMS through a second provider", "Quiet hours by timezone"],
+}
+COMPONENTS = ["the session store", "the connection pool", "the job queue",
+              "the order service", "the pricing service", "the CDN", "the read replica",
+              "the feature flag client", "the message broker", "the search index",
+              "the auth middleware", "the billing worker", "the rate limiter"]
+PROBLEMS = ["times out under load", "leaks connections after a deploy",
+            "returns stale data for a few seconds", "retries without backoff",
+            "holds a lock for the whole request", "logs the full payload",
+            "fans out one query per row", "ignores the tenant ID",
+            "evicts hot keys too early", "has no metrics at all"]
+FIXES = ["added a per-key TTL", "moved the call behind a feature flag",
+         "batched the writes into one round trip", "added jittered exponential backoff",
+         "cached the result for 30 seconds", "split the work into a background job",
+         "added a composite index", "wrapped it in a circuit breaker",
+         "pinned the client to the primary", "added a histogram of latencies"]
+
+
+# The few old sessions that talk about one rare problem, for the demo's search.
+STAMPEDES = {6, 41, 88, 133, 157}
+
+
+def tail_sessions():
+    rng = random.Random(7)
+    agents = ["claude"] * 5 + ["codex"] * 3 + ["pi"] * 2
+    out = []
+    for n in range(160):
+        project = rng.choice(sorted(TAIL_PROJECTS))
+        title = rng.choice(TAIL_PROJECTS[project])
+        msgs = [("user", f"{title}. Start by reading how {rng.choice(COMPONENTS)} is wired up.")]
+        for _ in range(rng.randint(8, 24)):
+            comp, prob, fix = rng.choice(COMPONENTS), rng.choice(PROBLEMS), rng.choice(FIXES)
+            msgs.append(("assistant",
+                f"Looked at {comp}: it {prob}. I {fix} and reran the tests; "
+                f"{rng.randint(80, 400)} passed. Next I'd check {rng.choice(COMPONENTS)}."))
+            msgs.append(("user", rng.choice([
+                f"Good. What about {rng.choice(COMPONENTS)}?",
+                "Keep going, but don't touch the public API.",
+                f"Why does {comp} {rng.choice(PROBLEMS)} only in production?",
+                "Write that up as a short note for the PR.",
+                "Can we do it without a migration?",
+            ])))
+        if n in STAMPEDES:
+            at = rng.randint(1, len(msgs) - 1) // 2 * 2 + 1
+            msgs[at:at] = [
+                ("user", "Every deploy causes a cache stampede on the pricing service. Why?"),
+                ("assistant", "The deploy flushes the hot keys, so every request misses at "
+                 "once and they all hit Postgres together: a cache stampede. I added "
+                 "request coalescing so one worker refills each key while the rest wait."),
+            ]
+        ago = 60 * 24 * (5 + n * 0.75) + rng.randint(0, 600)  # 5 days to ~4 months
+        sid = str(uuid.UUID(int=rng.getrandbits(128), version=4))
+        out.append((rng.choice(agents), sid, project, title, ago, msgs))
+    return out
+
+
 # What `claude agents --json` reports for the shimmed `claude` binary.
 LIVE = [
     {"sessionId": SESSIONS[0][1], "kind": "background", "id": "a1b2", "state": "blocked"},
@@ -136,15 +215,15 @@ def main():
     if HOME.exists():
         shutil.rmtree(HOME)
     (HOME / ".codex").mkdir(parents=True)
-    for agent, sid, project, title, ago, msgs in SESSIONS:
+    for agent, sid, project, title, ago, msgs in SESSIONS + tail_sessions():
         {"claude": claude, "codex": codex, "pi": pi}[agent](
             sid, f"{SRC}/{project}", title, msgs, ago)
     (HOME / "agents.json").write_text(json.dumps(LIVE))
     rules = HOME / ".config/agora/channels"
     rules.parent.mkdir(parents=True)
     rules.write_text(
-        f"shop     = {SRC}/webshop, {SRC}/payments, {SRC}/api-gateway\n"
-        f"platform = {SRC}/infra, {SRC}/analytics\n"
+        f"shop     = {SRC}/webshop, {SRC}/payments, {SRC}/api-gateway, {SRC}/search\n"
+        f"platform = {SRC}/infra, {SRC}/analytics, {SRC}/notifications\n"
         f"personal = {SRC}/blog, {SRC}/dotfiles\n")
 
 

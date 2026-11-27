@@ -26,7 +26,7 @@ PACE = 1.6
 SCRIPT = [
     (0.4, ""),
     (0.4, "/"),        # search straight away
-    *[(0.07, c) for c in "redis cache"],
+    *[(0.07, c) for c in "cache stampede"],
     (1.6, ""),         # matches found in conversation text
     (0.5, "\r"),       # leave the search box
     (0.7, "j"),
