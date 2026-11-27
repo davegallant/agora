@@ -1,17 +1,19 @@
 #!/bin/sh
-# Rebuild demo/agora.cast and demo/agora.gif from made-up sessions.
-# Set AGORA_BIN to skip the build. Needs cargo, python3 and agg (https://github.com/asciinema/agg).
+# Rebuild demo/agora.gif from made-up sessions, recorded in a real Kitty window
+# (demo/record.py) so the agent logos show. Never touches real sessions.
+# Needs Linux with Xvfb, kitty, xdotool, ffmpeg and the JetBrains Mono font.
 set -eu
 cd "$(dirname "$0")/.."
 
 bin=${AGORA_BIN:-target/release/agora}
 [ -n "${AGORA_BIN:-}" ] || cargo build --release --locked
 home=$(mktemp -d)
-trap 'rm -rf "$home"' EXIT
+rec=$(mktemp -d)
+trap 'rm -rf "$home" "$rec"' EXIT
 
 python3 demo/seed.py "$home"
-python3 demo/record.py "$bin" "$home" demo/agora.cast
-# Tokyo Night: background, foreground, then the 16 ANSI colours.
-theme=1a1b26,c0caf5,15161e,f7768e,9ece6a,e0af68,7aa2f7,bb9af7,7dcfff,a9b1d6,565f89,f7768e,9ece6a,e0af68,7aa2f7,bb9af7,7dcfff,c0caf5
-agg --theme "$theme" --font-size 16 --idle-time-limit 3 --last-frame-duration 2 \
-  demo/agora.cast demo/agora.gif
+python3 demo/record.py "$bin" "$home" "$rec/agora.mkv"
+# One palette for the whole clip; no dithering keeps text crisp and small.
+ffmpeg -loglevel error -y -i "$rec/agora.mkv" -vf \
+  "fps=10,split[a][b];[a]palettegen=max_colors=64:stats_mode=full[p];[b][p]paletteuse=dither=none" \
+  -loop 0 demo/agora.gif

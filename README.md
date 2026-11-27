@@ -151,6 +151,7 @@ or add `github:davegallant/agora` as a flake input and install
 (your real ones are untouched): `nix develop -c demo/try.sh`.
 
 The demo above is recorded from made-up sessions: `demo/render.sh` seeds a fake
-`$HOME`, drives agora through a scripted run and renders the asciinema cast to a
-GIF with [agg](https://github.com/asciinema/agg). The `demo` workflow re-records
-it when `src/` changes and commits the result to `main`.
+`$HOME`, drives agora through a scripted run in a real Kitty window on a
+virtual screen (so the agent logos show) and turns the recording into a GIF
+with ffmpeg. It needs Linux with Xvfb, kitty, xdotool and ffmpeg. The `demo`
+workflow re-records it when `src/` changes and commits the result to `main`.

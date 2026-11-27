@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
-"""Drive agora in a pseudo-terminal and save the session as an asciinema cast.
+"""Drive agora in a real Kitty window on a virtual screen and record it.
 
-usage: record.py <agora-binary> <fake-home> <out.cast>
+usage: record.py <agora-binary> <fake-home> <out.mkv>
 
-The keystrokes below are the whole demo; edit SCRIPT to change it.
+Kitty draws agora's images (the agent logos), so the recording shows exactly
+what a Kitty user sees. Needs Linux with Xvfb, kitty, xdotool and ffmpeg; the
+demo workflow installs them. The keystrokes below are the whole demo; edit
+SCRIPT to change it.
 """
-import codecs
-import fcntl
-import json
 import os
-import pty
-import select
-import struct
+import subprocess
 import sys
-import termios
+import tempfile
 import time
 from pathlib import Path
 
 COLS, ROWS = 120, 30
+DISPLAY = ":99"
+FPS = 20
 
 # (seconds to wait first, keys to send)
 SCRIPT = [
@@ -45,73 +45,128 @@ SCRIPT = [
     (1.5, "q"),
 ]
 
+# Tokyo Night, as the GIF has always used: background, foreground, then the
+# 16 ANSI colours.
+BG, FG = "#1a1b26", "#c0caf5"
+ANSI = ["#15161e", "#f7768e", "#9ece6a", "#e0af68", "#7aa2f7", "#bb9af7",
+        "#7dcfff", "#a9b1d6", "#565f89", "#f7768e", "#9ece6a", "#e0af68",
+        "#7aa2f7", "#bb9af7", "#7dcfff", "#c0caf5"]
+
+
+def escaped(keys):
+    """`keys` as kitty's send-text reads them: Python escapes."""
+    return "".join(c if c.isalnum() or c in " /-" else f"\\x{ord(c):02x}" for c in keys)
+
+
+def wait_for(what, check, timeout=30):
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if (got := check()) is not None:
+            return got
+        time.sleep(0.1)
+    sys.exit(f"timed out waiting for {what}")
+
 
 def main():
-    # Absolute: the child changes into the fake home before exec.
     binary = str(Path(sys.argv[1]).resolve())
-    home, out = Path(sys.argv[2]).resolve(), Path(sys.argv[3])
+    home, out = Path(sys.argv[2]).resolve(), Path(sys.argv[3]).resolve()
     shims = Path(__file__).resolve().parent / "bin"
+    tmp = Path(tempfile.mkdtemp())
+    sock = tmp / "kitty.sock"
+    status = tmp / "status"
+    log = tmp / "kitty.log"
+
+    xvfb = subprocess.Popen(
+        ["Xvfb", DISPLAY, "-screen", "0", "2560x1440x24", "-nolisten", "tcp"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    x = {"DISPLAY": DISPLAY, "PATH": "/usr/bin:/bin"}
+    wait_for("Xvfb", lambda: True if subprocess.run(
+        ["xdotool", "getdisplaygeometry"], env=x, capture_output=True).returncode == 0 else None)
+
+    options = {
+        "font_family": "JetBrains Mono",
+        "font_size": "13",
+        "initial_window_width": f"{COLS}c",
+        "initial_window_height": f"{ROWS}c",
+        "remember_window_size": "no",
+        "window_padding_width": "10",
+        "hide_window_decorations": "yes",
+        "placement_strategy": "top-left",
+        "cursor_blink_interval": "0",
+        "allow_remote_control": "yes",
+        "confirm_os_window_close": "0",
+        "enable_audio_bell": "no",
+        "background": BG,
+        "foreground": FG,
+        **{f"color{i}": c for i, c in enumerate(ANSI)},
+    }
     env = {
+        **x,
         "HOME": str(home),
         "PATH": f"{shims}:/usr/bin:/bin",
-        "TERM": "xterm-256color",
+        "LANG": "C.UTF-8",
         "COLORTERM": "truecolor",
-        "LANG": "en_US.UTF-8",
+        # Kitty needs OpenGL; there is no GPU here.
+        "LIBGL_ALWAYS_SOFTWARE": "1",
     }
+    kitty = subprocess.Popen(
+        ["kitty", "--config", "NONE", "--class", "agora-demo",
+         "--listen-on", f"unix:{sock}", "--directory", str(home),
+         *[a for k, v in options.items() for a in ("-o", f"{k}={v}")],
+         "sh", "-c", f'"{binary}"; echo $? > "{status}"'],
+        env=env, stdout=subprocess.DEVNULL, stderr=log.open("w"))
 
-    pid, fd = pty.fork()
-    if pid == 0:
-        os.chdir(home)
-        os.execve(binary, [binary], env)
-    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
+    def geometry():
+        r = subprocess.run(["xdotool", "search", "--sync", "--class", "agora-demo",
+                            "getwindowgeometry", "--shell"],
+                           env=x, capture_output=True, text=True, timeout=30)
+        g = dict(l.split("=", 1) for l in r.stdout.split() if "=" in l)
+        return g if "WIDTH" in g else None
 
-    start = time.monotonic()
-    events = []
-    # Reads can split a multibyte character; decode incrementally.
-    decoder = codecs.getincrementaldecoder("utf-8")("replace")
+    # Kitty maps a small window first, then grows it to COLS x ROWS: wait
+    # until two readings half a second apart agree.
+    last = {}
 
-    def pump(seconds):
-        end = time.monotonic() + seconds
-        while (left := end - time.monotonic()) > 0:
-            r, _, _ = select.select([fd], [], [], left)
-            if not r:
-                continue
-            try:
-                data = os.read(fd, 65536)
-            except OSError:
-                return False
-            if not data:
-                return False
-            # Answer cursor-position queries so the TUI never stalls.
-            if b"\x1b[6n" in data:
-                os.write(fd, b"\x1b[1;1R")
-            text = decoder.decode(data)
-            if text:
-                events.append([round(time.monotonic() - start, 4), "o", text])
-        return True
+    def settled():
+        nonlocal last
+        g = geometry()
+        time.sleep(0.5)
+        same = g is not None and g == last
+        last = g or {}
+        return g if same else None
+
+    g = wait_for("the kitty window to settle", settled)
+    # Even sizes, which the GIF encoder and players prefer.
+    w, h = int(g["WIDTH"]) // 2 * 2, int(g["HEIGHT"]) // 2 * 2
+    ffmpeg = subprocess.Popen(
+        ["ffmpeg", "-loglevel", "error", "-y", "-f", "x11grab", "-draw_mouse", "0",
+         "-framerate", str(FPS), "-video_size", f"{w}x{h}",
+         "-i", f"{DISPLAY}+{g['X']},{g['Y']}",
+         "-c:v", "libx264rgb", "-crf", "0", "-preset", "ultrafast", str(out)],
+        env=x, stdin=subprocess.PIPE)
 
     for wait, keys in SCRIPT:
-        if not pump(wait):
+        time.sleep(wait)
+        if kitty.poll() is not None:
             break
         if keys:
-            os.write(fd, keys.encode())
-    pump(1.0)
+            subprocess.run(["kitty", "@", "--to", f"unix:{sock}", "send-text",
+                            escaped(keys)], env=x, check=True,
+                           stdout=subprocess.DEVNULL)
     try:
-        _, status = os.waitpid(pid, 0)
-    except ChildProcessError:
-        status = 0
-    # Never write a cast of a crash (or a failed exec) over the good one.
-    if os.waitstatus_to_exitcode(status) != 0:
-        tail = "".join(e[2] for e in events)[-2000:]
-        sys.exit(f"agora exited with status {os.waitstatus_to_exitcode(status)}:\n{tail}")
+        kitty.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        kitty.kill()
+    time.sleep(0.3)
+    ffmpeg.communicate(b"q")
+    xvfb.terminate()
 
-    header = {"version": 2, "width": COLS, "height": ROWS,
-              "timestamp": int(time.time()), "title": "agora",
-              "env": {"TERM": env["TERM"], "SHELL": "/bin/sh"}}
-    with out.open("w") as f:
-        f.write(json.dumps(header) + "\n")
-        for e in events:
-            f.write(json.dumps(e) + "\n")
+    # Never keep a recording of a crash (or a failed start) over the good one.
+    code = status.read_text().strip() if status.exists() else "missing"
+    if code != "0":
+        out.unlink(missing_ok=True)
+        err = log.read_text(errors="replace")[-2000:]
+        sys.exit(f"agora exited with status {code}\n{err}")
 
 
 main()
