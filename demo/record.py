@@ -19,6 +19,8 @@ from pathlib import Path
 COLS, ROWS = 120, 30
 DISPLAY = ":99"
 FPS = 20
+# Every wait in SCRIPT is stretched by this; raise it to slow the demo down.
+PACE = 1.6
 
 # (seconds to wait first, keys to send)
 SCRIPT = [
@@ -153,7 +155,7 @@ def main():
         env=x, stdin=subprocess.PIPE)
 
     for wait, keys in SCRIPT:
-        time.sleep(wait)
+        time.sleep(wait * PACE)
         if kitty.poll() is not None:
             break
         if keys:
