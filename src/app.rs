@@ -116,6 +116,8 @@ pub struct App {
     started: Instant,
     /// Index into `THEMES`.
     pub theme: usize,
+    /// Agent logos for the list; `None` in terminals without images.
+    pub art: Option<crate::art::Art>,
     /// While choosing a theme: the one to go back to on esc.
     pub picking_theme: Option<usize>,
     /// The `?` overlay is up; the next key closes it.
@@ -294,6 +296,7 @@ impl App {
             search_progress: None,
             started: Instant::now(),
             theme,
+            art: None,
             picking_theme: None,
             showing_keys: false,
             closing: None,

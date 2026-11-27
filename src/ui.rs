@@ -428,10 +428,11 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
             };
             Row::new(vec![
                 Cell::from(badge(t, live)),
-                Cell::from(Span::styled(
-                    s.agent.name(),
-                    Style::new().fg(agent_color(t, s.agent)),
-                )),
+                Cell::from(Line::from(vec![
+                    // Room for the logo, drawn over it after the table.
+                    Span::raw(if app.art.is_some() { "   " } else { "" }),
+                    Span::styled(s.agent.name(), Style::new().fg(agent_color(t, s.agent))),
+                ])),
                 Cell::from(Line::from(match app.git.get(&s.dir) {
                     // Shorten the name so the mark fits the 18-wide column.
                     Some(g) if g.dirty > 0 => vec![
@@ -485,7 +486,11 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
         rows,
         [
             Constraint::Length(3),
-            Constraint::Length(6),
+            Constraint::Length(if app.art.is_some() {
+                6 + crate::art::WIDTH + 1
+            } else {
+                6
+            }),
             Constraint::Length(18),
             Constraint::Fill(1),
             Constraint::Length(4),
@@ -494,6 +499,17 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
     .column_spacing(1)
     .row_highlight_style(Style::new().bg(t.selection).add_modifier(Modifier::BOLD));
     f.render_stateful_widget(table, table_area, &mut app.table);
+    if let Some(art) = &app.art {
+        // Over the agent column, which starts after the 3-wide badge and a gap.
+        let top = app.table.offset();
+        for (y, &i) in (table_area.y..table_area.bottom()).zip(app.view.iter().skip(top)) {
+            let at = Rect::new(table_area.x + 4, y, crate::art::WIDTH, 1);
+            f.render_widget(
+                ratatui_image::Image::new(art.get(app.sessions[i].agent)),
+                at,
+            );
+        }
+    }
     if app.view.is_empty() && app.live_only {
         f.render_widget(
             Paragraph::new(" no live sessions · l shows all").fg(t.muted),

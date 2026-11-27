@@ -8,6 +8,8 @@ All notable changes to agora. The format follows
 
 ### Added
 
+- In terminals that draw images (Kitty, Ghostty, iTerm2, WezTerm), each row
+  shows the agent's logo beside its name. `AGORA_NO_IMAGES=1` turns them off.
 - `ctrl-w` deletes the last word of a search; `ctrl-u` clears it, as before.
 - The list shows each session's latest prompt in grey after its title.
 - Ages in the list are colored by how old they are: green under an hour,

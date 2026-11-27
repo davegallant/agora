@@ -84,6 +84,11 @@ Themes: `terminal` (your terminal's own colors), `tokyo-night`, `monokai`,
 `catppuccin-mocha`, `dracula`, `gruvbox-dark` and `nord`. The choice is saved in
 `~/.config/agora/theme`.
 
+In terminals that draw images (Kitty, Ghostty, iTerm2, WezTerm, sixel ones)
+each row shows the agent's logo beside its name; elsewhere, and inside tmux,
+the list keeps plain names. Set `AGORA_NO_IMAGES=1` to turn the logos off. They
+come from [fast-resume](https://github.com/angristan/fast-resume) (MIT).
+
 `agora --list` prints live sessions and recent history as tab-separated text, and
 `agora --search <words>` prints sessions whose conversation text matches.
 

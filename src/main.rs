@@ -1,6 +1,7 @@
 //! agora: one TUI for live and past Claude Code, Codex and pi sessions.
 
 mod app;
+mod art;
 mod channels;
 mod child;
 mod clipboard;
@@ -119,6 +120,9 @@ fn main() -> Result<()> {
     // screen; ours turns mouse capture off first, or the shell fills with
     // mouse escapes after a panic.
     let mut terminal = ratatui::init();
+    // Agent logos, where the terminal draws images; this asks the terminal
+    // its cell size, so it comes before anything else reads input.
+    app.art = art::Art::load();
     let restore = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let _ = execute!(std::io::stdout(), DisableMouseCapture);
