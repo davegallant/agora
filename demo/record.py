@@ -21,28 +21,29 @@ FPS = 20
 
 # (seconds to wait first, keys to send)
 SCRIPT = [
-    (2.5, ""),         # let the first live snapshot land
-    (0.6, "j"), (0.6, "j"), (0.6, "j"), (0.6, "j"),
-    (0.8, "k"), (0.6, "k"), (0.6, "k"), (0.6, "k"),
-    (1.2, "\t"),       # claude only
-    (1.2, "\t"),       # codex only
-    (1.2, "\t"),       # pi only
-    (1.2, "\t"),       # back to all
-    (1.2, "c"),        # channel: shop
-    (1.2, "c"),        # channel: platform
-    (1.2, "c"),        # channel: personal
-    (1.0, "C"), (1.0, "C"), (1.0, "C"),  # back to all
-    (1.2, "l"),        # live only
-    (1.8, "l"),
-    (1.2, "/"),
-    *[(0.18, c) for c in "redis cache"],
-    (2.5, "\x1b[B"),   # matches found in conversation text
-    (1.5, "\x1b[B"),
-    (1.0, "\r"),       # leave the search box
-    (1.2, "N"),        # jump between highlighted matches
-    (1.2, "N"),
-    (2.0, "\x1b"),     # clear search
-    (1.5, "q"),
+    (1.2, ""),         # let the first live snapshot land
+    (0.4, "/"),        # search straight away
+    *[(0.07, c) for c in "redis cache"],
+    (1.6, ""),         # matches found in conversation text
+    (0.5, "\r"),       # leave the search box
+    (0.7, "j"),
+    (0.7, "v"),        # read that conversation full-screen
+    (1.4, "\x06"),     # ctrl-f: a page down
+    (1.0, "\x06"),
+    (1.2, "\x1b"),     # back to the list
+    (0.8, "\x1b"),     # clear the search
+    (0.8, "\t"),       # claude only
+    (0.6, "\t"),       # codex only
+    (0.6, "\t"),       # pi only
+    (0.6, "\t"),       # back to all
+    (0.7, "c"),        # channel: shop
+    (0.6, "c"),        # channel: platform
+    (0.6, "C"), (0.5, "C"),  # back to all
+    (0.7, "l"),        # live only
+    (1.0, "l"),
+    (0.8, "?"),        # every key
+    (2.2, "?"),        # any key closes it
+    (0.8, "q"),
 ]
 
 # Tokyo Night, as the GIF has always used: background, foreground, then the
