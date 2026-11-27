@@ -1267,18 +1267,30 @@ impl App {
             (None, None) => return,
         };
         if done.is_ok() {
-            let now = Instant::now();
-            self.closed.push((self.sessions[i].id.clone(), now));
-            if let Some(term) = live.term {
-                self.closed.push((term.id, now));
-            }
-            let snap = std::mem::take(&mut self.last_snapshot);
-            self.apply(snap);
+            self.forget_closed(i, live.term.map(|t| t.id));
         }
         self.status = Some(match done {
             Ok(()) => format!("closed “{title}”"),
             Err(e) => format!("could not close “{title}”: {e}"),
         });
+    }
+
+    /// Drop a just-closed session from the live state. It falls out of the
+    /// live group and sorts lower, so the cursor stays on its row (where the
+    /// next session moves up) rather than following it down.
+    fn forget_closed(&mut self, i: usize, term: Option<String>) {
+        let row = self.table.selected();
+        let now = Instant::now();
+        self.closed.push((self.sessions[i].id.clone(), now));
+        if let Some(term) = term {
+            self.closed.push((term, now));
+        }
+        let snap = std::mem::take(&mut self.last_snapshot);
+        self.apply(snap);
+        if let Some(row) = row.filter(|_| !self.view.is_empty()) {
+            self.lost = None;
+            self.table.select(Some(row.min(self.view.len() - 1)));
+        }
     }
 
     /// Copy the selected session's resume command, or with `path` its folder.
@@ -2204,6 +2216,31 @@ mod tests {
             status == "closed “A”" || status.starts_with("could not close “A”"),
             "{status}"
         );
+    }
+
+    #[test]
+    fn closing_keeps_the_cursor_on_its_row() {
+        let mut a = app(vec![
+            session("a", "A", 30),
+            session("b", "B", 40),
+            session("c", "C", 10),
+        ]);
+        let term = |id: &str, title: &str| Term {
+            id: id.into(),
+            title: title.into(),
+            cwd: "/w/proj".into(),
+        };
+        a.apply(Snapshot {
+            terms: vec![term("TB", "B"), term("TC", "C")],
+            ..Default::default()
+        });
+        // Live C, live B, then A.
+        press(&mut a, KeyCode::Char('j'));
+        assert_eq!(a.selected(), Some(1));
+        a.forget_closed(1, Some("TB".into()));
+        assert!(!a.live.contains_key(&1));
+        assert_eq!(a.table.selected(), Some(1), "stayed on the row");
+        assert_eq!(a.selected(), Some(0), "A moved up into it");
     }
 
     #[test]

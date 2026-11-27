@@ -18,6 +18,8 @@ All notable changes to agora. The format follows
 
 ### Fixed
 
+- Closing a session with `x` keeps the cursor on its row instead of
+  following the session down the list.
 - A session titled from its first prompt (every pi session, and others
   without a title of their own) shows the first line, cut to about 60
   characters, instead of the whole prompt; a pi skill prompt reads as
