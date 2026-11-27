@@ -13,6 +13,7 @@ All notable changes to agora. The format follows
 
 ### Changed
 
+- The `?` keys list and the channel picker dim the screen behind them.
 - The preview pane is hidden at start, so the list fills the screen; `i` shows
   or hides it.
 

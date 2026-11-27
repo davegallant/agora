@@ -178,9 +178,30 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if app.picking_theme.is_some() {
         draw_theme_picker(f, app);
     } else if app.picking_channel.is_some() {
+        dim(f, t);
         draw_channel_picker(f, app);
     } else if app.showing_keys {
+        dim(f, t);
         draw_keys(f, app);
+    }
+}
+
+/// Grey out everything drawn so far, so a pop-up on top stands out. The
+/// theme picker skips this: the screen behind it shows the theme on trial.
+fn dim(f: &mut Frame, t: &Theme) {
+    let area = f.area();
+    let buf = f.buffer_mut();
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            if let Some(c) = buf.cell_mut((x, y)) {
+                c.set_style(
+                    Style::new()
+                        .fg(t.muted)
+                        .bg(t.bg.unwrap_or(Color::Reset))
+                        .remove_modifier(Modifier::all()),
+                );
+            }
+        }
     }
 }
 
@@ -1246,6 +1267,38 @@ mod tests {
         assert!(!s.contains("question 2"), "{s}");
         app.previewing = true;
         assert_has(&screen(&mut app, 80, 24), &["question 2"]);
+    }
+
+    #[test]
+    fn pop_ups_dim_the_screen_behind_them() {
+        let mut app = App::new(
+            PathBuf::from("/nonexistent"),
+            vec![session("a", "Alpha", PathBuf::from("/nonexistent/a"))],
+        );
+        let muted = app.theme().muted;
+        let fg_at = |app: &mut App, text: &str| {
+            let backend = TestBackend::new(100, 30);
+            let mut term = Terminal::new(backend).unwrap();
+            term.draw(|f| super::draw(f, app)).unwrap();
+            let buf = term.backend().buffer().clone();
+            let line = (0..buf.area.height)
+                .find(|&y| {
+                    (0..buf.area.width)
+                        .map(|x| buf[(x, y)].symbol())
+                        .collect::<String>()
+                        .contains(text)
+                })
+                .unwrap();
+            let row: String = (0..buf.area.width)
+                .map(|x| buf[(x, line)].symbol())
+                .collect();
+            let x = row.find(text).unwrap();
+            let x = row[..x].chars().count() as u16;
+            buf[(x, line)].fg
+        };
+        assert_ne!(fg_at(&mut app, "claude"), muted);
+        app.picking_channel = Some(None);
+        assert_eq!(fg_at(&mut app, "claude"), muted);
     }
 
     #[test]
