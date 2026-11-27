@@ -158,6 +158,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Layout::vertical([Constraint::Min(3), Constraint::Length(1)]).areas(f.area());
     if app.reading.is_some() {
         app.list_area = Rect::default();
+        app.search_area = Rect::default();
         app.preview_area = main;
         draw_preview(f, app, main);
     } else {
@@ -314,6 +315,60 @@ fn draw_channel_picker(f: &mut Frame, app: &App) {
     popup(f, app, "channel", lines, width);
 }
 
+/// The search box above the list: its border lights up while you type, and
+/// its title says how the conversation search is going.
+fn draw_search(f: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme();
+    let dim = Style::new().fg(t.muted);
+    let mut title = vec![Span::raw(" search ")];
+    if app.searching() {
+        title.push(Span::styled(
+            format!("{} ", app.spinner()),
+            Style::new().fg(t.accent),
+        ));
+        title.push(Span::raw(match app.search_progress {
+            Some((done, total)) => format!("searching conversations {done}/{total} "),
+            None => "searching conversations… ".into(),
+        }));
+    } else if !app.text_hits.is_empty() {
+        let n = app.text_hits.len();
+        let plural = if n == 1 { "match" } else { "matches" };
+        title.push(Span::raw(format!("· {n} {plural} in conversation text ")));
+    }
+    if app.elsewhere > 0 && !app.searching() {
+        title.push(Span::raw(format!(
+            "· +{} in other channels (# to switch) ",
+            app.elsewhere
+        )));
+    }
+    let border = if app.filtering {
+        t.accent
+    } else if app.filter.is_empty() {
+        t.muted
+    } else {
+        t.subtle
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(ratatui::widgets::BorderType::Rounded)
+        .border_style(Style::new().fg(border))
+        .title(Line::from(title).fg(border));
+    let glyph = Span::raw(" ");
+    let line = if app.filtering || !app.filter.is_empty() {
+        Line::from(vec![
+            glyph,
+            Span::raw(app.filter.clone()),
+            Span::raw(if app.filtering { "█" } else { "" }),
+        ])
+    } else {
+        Line::from(vec![
+            glyph,
+            Span::styled("click or press / to search sessions…", dim),
+        ])
+    };
+    f.render_widget(Paragraph::new(line).block(block), area);
+}
+
 fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
     let t = app.theme();
     let mut parts: Vec<String> = Vec::new();
@@ -343,50 +398,13 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
         app.sessions.len(),
         scope
     );
+    let [search, list_area] =
+        Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).areas(area);
+    app.search_area = search;
+    draw_search(f, app, search);
     let block = Block::default().borders(Borders::ALL).title(title.bold());
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-
-    let [search, table_area] =
-        Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(inner);
-    let search_line = if app.filtering || !app.filter.is_empty() {
-        let dim = Style::new().fg(t.muted);
-        let mut spans = vec![
-            Span::styled(" / ", Style::new().fg(t.accent)),
-            Span::raw(app.filter.clone()),
-            Span::raw(if app.filtering { "█" } else { "" }),
-        ];
-        if app.searching() {
-            spans.push(Span::styled(
-                format!("   {} ", app.spinner()),
-                Style::new().fg(t.accent),
-            ));
-            spans.push(Span::styled(
-                match app.search_progress {
-                    Some((done, total)) => format!("searching conversations {done}/{total}"),
-                    None => "searching conversations…".into(),
-                },
-                dim,
-            ));
-        } else if !app.text_hits.is_empty() {
-            let n = app.text_hits.len();
-            let plural = if n == 1 { "match" } else { "matches" };
-            spans.push(Span::styled(
-                format!("   {n} {plural} in conversation text"),
-                dim,
-            ));
-        }
-        if app.elsewhere > 0 && !app.searching() {
-            spans.push(Span::styled(
-                format!("   +{} in other channels (# to switch)", app.elsewhere),
-                dim,
-            ));
-        }
-        Line::from(spans)
-    } else {
-        Line::from(Span::styled(" / to search", Style::new().fg(t.muted)))
-    };
-    f.render_widget(Paragraph::new(search_line), search);
+    let table_area = block.inner(list_area);
+    f.render_widget(block, list_area);
 
     let terms = search::terms(&app.filter);
     let chosen = app.table.selected();
@@ -892,7 +910,7 @@ mod tests {
         app.filtering = true;
         app.filter = "al".into();
         let s = screen(&mut app, 100, 20);
-        assert_has(&s, &[" / al█", "type to filter"]);
+        assert_has(&s, &["│ al█", "type to filter"]);
         assert!(!s.contains("["), "no scope shown:\n{s}");
 
         app.status = Some("something happened".into());

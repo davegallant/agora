@@ -15,6 +15,9 @@ All notable changes to agora. The format follows
 
 ### Changed
 
+- Search has its own box above the list, lit in the accent colour while you
+  type, with the conversation-search progress in its title. Clicking it
+  starts a search, as `/` does.
 - The list no longer shows each transcript's size, and `s` no longer sorts
   by it: it switches between recent and project.
 - The `?` keys list and the channel picker dim the screen behind them.

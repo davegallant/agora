@@ -98,6 +98,8 @@ pub struct App {
     pub pane: PreviewPane,
     /// Where the list and preview were last drawn, for routing the mouse wheel.
     pub list_area: Rect,
+    /// The search box; a click there starts a search.
+    pub search_area: Rect,
     pub preview_area: Rect,
     rx: Receiver<Snapshot>,
     /// Transcripts written or removed on disk.
@@ -280,6 +282,7 @@ impl App {
                 loading: false,
             },
             list_area: Rect::default(),
+            search_area: Rect::default(),
             preview_area: Rect::default(),
             rx: live::spawn_poller(focus.clone(), LIVE_EVERY.0, LIVE_EVERY.1),
             watch,
@@ -988,14 +991,24 @@ impl App {
         }
     }
 
-    /// The wheel scrolls whichever pane it is over.
+    /// The wheel scrolls whichever pane it is over; a click on the search
+    /// box starts a search, as `/` does.
     fn on_mouse(&mut self, m: MouseEvent) {
+        let at = Position::new(m.column, m.row);
         let delta = match m.kind {
             MouseEventKind::ScrollDown => 1,
             MouseEventKind::ScrollUp => -1,
+            MouseEventKind::Down(_)
+                if self.search_area.contains(at)
+                    && self.picking_theme.is_none()
+                    && self.picking_channel.is_none()
+                    && !self.showing_keys =>
+            {
+                self.filtering = true;
+                return;
+            }
             _ => return,
         };
-        let at = Position::new(m.column, m.row);
         if self.preview_area.contains(at) {
             self.scroll_preview(3 * delta);
         } else if self.list_area.contains(at) {
@@ -1967,6 +1980,29 @@ mod tests {
         a.on_mouse(wheel(MouseEventKind::Moved, 2));
         assert_eq!(a.table.selected(), Some(1));
         assert_eq!(a.pane.follow, Follow::Top(5));
+    }
+
+    #[test]
+    fn clicking_the_search_box_starts_a_search() {
+        use ratatui::crossterm::event::MouseButton;
+        let mut a = five();
+        a.search_area = Rect::new(0, 0, 80, 3);
+        let click = |row| MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 3,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        a.on_mouse(click(5));
+        assert!(!a.filtering, "a click below the box does nothing");
+        a.showing_keys = true;
+        a.on_mouse(click(1));
+        assert!(!a.filtering, "not under the keys list");
+        a.showing_keys = false;
+        a.on_mouse(click(1));
+        assert!(a.filtering);
+        typed(&mut a, "zz");
+        assert_eq!(a.filter, "zz");
     }
 
     #[test]
