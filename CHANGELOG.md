@@ -6,6 +6,8 @@ All notable changes to agora. The format follows
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-27
+
 ### Added
 
 - In terminals that draw images (Kitty, Ghostty, iTerm2, WezTerm), each row
@@ -208,7 +210,8 @@ All notable changes to agora. The format follows
   sessions first, history below, a preview of the conversation, and `enter` /
   `t` to jump to, attach to, or resume a session.
 
-[Unreleased]: https://github.com/davegallant/agora/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/davegallant/agora/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/davegallant/agora/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/davegallant/agora/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/davegallant/agora/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/davegallant/agora/compare/v0.3.0...v0.4.0
