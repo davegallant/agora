@@ -577,23 +577,16 @@ impl App {
         let searching = !terms.is_empty();
         view.sort_by_cached_key(|&i| {
             let s = &self.sessions[i];
-            let (project, size) = match self.sort {
-                Sort::Recent => (String::new(), 0),
-                Sort::Project => (s.project().to_lowercase(), 0),
-                Sort::Size => (String::new(), s.size),
+            let project = match self.sort {
+                Sort::Recent => String::new(),
+                Sort::Project => s.project().to_lowercase(),
             };
             let strength = match self.text_hits.get(&i) {
                 _ if !searching || name_hits.contains(&i) => search::Score::MAX,
                 Some((score, _)) => *score,
                 None => 0,
             };
-            (
-                self.rank(i),
-                Reverse(strength),
-                project,
-                Reverse(size),
-                Reverse(s.mtime),
-            )
+            (self.rank(i), Reverse(strength), project, Reverse(s.mtime))
         });
         self.name_hits = name_hits;
         self.view = view;
@@ -2336,18 +2329,9 @@ mod tests {
     fn s_cycles_the_sort_and_live_stays_on_top() {
         use crate::state::Sort;
         let mut a = app(vec![
-            Session {
-                size: 10,
-                ..with(Agent::Claude, "a", "A", "/w/zeta", 0)
-            },
-            Session {
-                size: 300,
-                ..with(Agent::Claude, "b", "B", "/w/alpha", 10)
-            },
-            Session {
-                size: 20,
-                ..with(Agent::Claude, "c", "C", "/w/mid", 20)
-            },
+            with(Agent::Claude, "a", "A", "/w/zeta", 0),
+            with(Agent::Claude, "b", "B", "/w/alpha", 10),
+            with(Agent::Claude, "c", "C", "/w/mid", 20),
         ]);
         a.live.insert(2, live(State::Busy));
         a.rebuild_view();
@@ -2355,9 +2339,6 @@ mod tests {
         press(&mut a, KeyCode::Char('s'));
         assert_eq!(a.sort, Sort::Project);
         assert_eq!(titles(&a), ["C", "B", "A"]);
-        press(&mut a, KeyCode::Char('s'));
-        assert_eq!(a.sort, Sort::Size);
-        assert_eq!(titles(&a), ["C", "B", "A"], "size: largest first");
         press(&mut a, KeyCode::Char('s'));
         assert_eq!(a.sort, Sort::Recent);
         assert_eq!(titles(&a), ["C", "A", "B"]);
@@ -2401,7 +2382,7 @@ mod tests {
             &home,
             &crate::state::ViewState {
                 channel: Some("gone".into()),
-                sort: Sort::Size,
+                sort: Sort::Project,
                 ..Default::default()
             },
         )
@@ -2411,7 +2392,7 @@ mod tests {
             vec![with(Agent::Claude, "a", "A", "/w/proj", 0)],
         );
         assert_eq!(a.channel_filter, None);
-        assert_eq!(a.sort, Sort::Size, "the rest still applies");
+        assert_eq!(a.sort, Sort::Project, "the rest still applies");
         assert_eq!(titles(&a), ["A"]);
         fs::remove_dir_all(&home).unwrap();
     }

@@ -13,7 +13,7 @@ pub struct Theme {
     /// Background and default text; `None` leaves the terminal's.
     pub bg: Option<Color>,
     pub fg: Option<Color>,
-    /// Hints, ages, rules: text that should recede.
+    /// Hints, sizes, rules: text that should recede.
     pub muted: Color,
     /// Secondary text: project names, the session's folder.
     pub subtle: Color,
@@ -29,6 +29,8 @@ pub struct Theme {
     pub claude: Color,
     pub codex: Color,
     pub pi: Color,
+    /// Session ages: under an hour, a day, a week, and older; green to red.
+    pub ages: [Color; 4],
 }
 
 const fn rgb(hex: u32) -> Color {
@@ -51,6 +53,7 @@ pub const THEMES: &[Theme] = &[
         claude: Color::LightRed,
         codex: Color::LightBlue,
         pi: Color::LightMagenta,
+        ages: [Color::Green, Color::Yellow, Color::LightRed, Color::Red],
     },
     Theme {
         name: "tokyo-night",
@@ -67,6 +70,7 @@ pub const THEMES: &[Theme] = &[
         claude: rgb(0xff9e64),
         codex: rgb(0x7aa2f7),
         pi: rgb(0xbb9af7),
+        ages: [rgb(0x9ece6a), rgb(0xe0af68), rgb(0xff9e64), rgb(0xf7768e)],
     },
     Theme {
         name: "monokai",
@@ -83,6 +87,7 @@ pub const THEMES: &[Theme] = &[
         claude: rgb(0xfd971f),
         codex: rgb(0x66d9ef),
         pi: rgb(0xae81ff),
+        ages: [rgb(0xa6e22e), rgb(0xe6db74), rgb(0xfd971f), rgb(0xf92672)],
     },
     Theme {
         name: "catppuccin-mocha",
@@ -99,6 +104,7 @@ pub const THEMES: &[Theme] = &[
         claude: rgb(0xfab387),
         codex: rgb(0x89b4fa),
         pi: rgb(0xcba6f7),
+        ages: [rgb(0xa6e3a1), rgb(0xf9e2af), rgb(0xfab387), rgb(0xf38ba8)],
     },
     Theme {
         name: "dracula",
@@ -115,6 +121,7 @@ pub const THEMES: &[Theme] = &[
         claude: rgb(0xffb86c),
         codex: rgb(0x8be9fd),
         pi: rgb(0xbd93f9),
+        ages: [rgb(0x50fa7b), rgb(0xf1fa8c), rgb(0xffb86c), rgb(0xff5555)],
     },
     Theme {
         name: "gruvbox-dark",
@@ -131,6 +138,7 @@ pub const THEMES: &[Theme] = &[
         claude: rgb(0xfe8019),
         codex: rgb(0x83a598),
         pi: rgb(0xd3869b),
+        ages: [rgb(0xb8bb26), rgb(0xfabd2f), rgb(0xfe8019), rgb(0xfb4934)],
     },
     Theme {
         name: "nord",
@@ -147,6 +155,7 @@ pub const THEMES: &[Theme] = &[
         claude: rgb(0xd08770),
         codex: rgb(0x81a1c1),
         pi: rgb(0xb48ead),
+        ages: [rgb(0xa3be8c), rgb(0xebcb8b), rgb(0xd08770), rgb(0xbf616a)],
     },
 ];
 

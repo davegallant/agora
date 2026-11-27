@@ -10,9 +10,13 @@ All notable changes to agora. The format follows
 
 - `ctrl-w` deletes the last word of a search; `ctrl-u` clears it, as before.
 - The list shows each session's latest prompt in grey after its title.
+- Ages in the list are colored by how old they are: green under an hour,
+  then yellow under a day, orange under a week, and red after that.
 
 ### Changed
 
+- The list no longer shows each transcript's size, and `s` no longer sorts
+  by it: it switches between recent and project.
 - The `?` keys list and the channel picker dim the screen behind them.
 - The preview pane under the list is gone, so the list fills the screen; `v`
   reads a conversation full-screen as before.

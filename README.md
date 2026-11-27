@@ -64,7 +64,7 @@ Other terminals don't have these yet.
 | `#` | pick a channel from a list with session counts: `j`/`k` try one, `enter` keeps it, `esc` cancels |
 | `tab` | cycle agent: all, claude, codex, pi |
 | `l` | live sessions only |
-| `s` | sort by recent, project or size; live sessions stay on top |
+| `s` | sort by recent or project; live sessions stay on top |
 | `p` | pin / unpin: pinned sessions sit just under the live ones, `★` before the title |
 | `j` `k` `↑` `↓` `g` `G` | move |
 | `T` | choose a theme: `j`/`k` try one, `enter` keeps it, `esc` cancels |

@@ -47,7 +47,7 @@ pub const KEYS: &[(&str, &str)] = &[
     ("#", "pick a channel from a list, with session counts"),
     ("tab", "cycle agent: all, claude, codex, pi"),
     ("l", "live sessions only"),
-    ("s", "sort by recent, project or size"),
+    ("s", "sort by recent or project"),
     ("p", "pin / unpin: pinned sessions sit under the live ones"),
     ("T", "choose a theme"),
     ("r", "reload every session from disk"),
@@ -65,6 +65,20 @@ fn agent_color(t: &Theme, a: Agent) -> Color {
         Agent::Codex => t.codex,
         Agent::Pi => t.pi,
     }
+}
+
+/// Greener for newer, redder for older: under an hour, a day, a week, older.
+fn age_color(th: &Theme, t: SystemTime) -> Color {
+    let secs = SystemTime::now()
+        .duration_since(t)
+        .map_or(0, |d| d.as_secs());
+    let i = match secs {
+        s if s < 3600 => 0,
+        s if s < 86_400 => 1,
+        s if s < 86_400 * 7 => 2,
+        _ => 3,
+    };
+    th.ages[i]
 }
 
 fn age(t: SystemTime) -> String {
@@ -106,22 +120,6 @@ fn ago(t: SystemTime) -> String {
     match age(t).as_str() {
         "now" => "just now".into(),
         a => format!("{a} ago"),
-    }
-}
-
-/// A transcript size in at most five characters: `512B`, `240K`, `3.1M`.
-fn size(bytes: u64) -> String {
-    const UNITS: [&str; 4] = ["B", "K", "M", "G"];
-    let mut n = bytes as f64;
-    let mut u = 0;
-    while n >= 1024.0 && u < UNITS.len() - 1 {
-        n /= 1024.0;
-        u += 1;
-    }
-    if u >= 2 && n < 10.0 {
-        format!("{n:.1}{}", UNITS[u])
-    } else {
-        format!("{}{}", n as u64, UNITS[u])
     }
 }
 
@@ -457,8 +455,11 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
                     }
                     spans
                 })),
-                Cell::from(Line::from(size(s.size)).right_aligned().fg(dim)),
-                Cell::from(Line::from(age(s.mtime)).right_aligned().fg(dim)),
+                Cell::from(
+                    Line::from(age(s.mtime))
+                        .right_aligned()
+                        .fg(age_color(t, s.mtime)),
+                ),
             ])
         })
         .collect();
@@ -469,7 +470,6 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
             Constraint::Length(6),
             Constraint::Length(18),
             Constraint::Fill(1),
-            Constraint::Length(5),
             Constraint::Length(4),
         ],
     )
@@ -733,13 +733,13 @@ mod tests {
             "hi back",
             "enter open",
             "proj",
-            "240K",
         ] {
             assert!(screen.contains(want), "missing {want:?} in:\n{screen}");
         }
+        assert!(!screen.contains("240K"), "no size column:\n{screen}");
     }
 
-    use super::{age, badge, size};
+    use super::{age, age_color, badge};
     const T: &crate::theme::Theme = &crate::theme::THEMES[0];
     use crate::app::Follow;
     use crate::live::{Live, State};
@@ -808,13 +808,15 @@ mod tests {
     }
 
     #[test]
-    fn sizes() {
-        assert_eq!(size(0), "0B");
-        assert_eq!(size(512), "512B");
-        assert_eq!(size(240 * 1024), "240K");
-        assert_eq!(size(3_250_000), "3.1M");
-        assert_eq!(size(12 * 1024 * 1024), "12M");
-        assert_eq!(size(1_300_000_000), "1.2G");
+    fn age_colors_go_from_green_to_red() {
+        let t = &crate::theme::THEMES[0];
+        let c = |s: u64| age_color(t, SystemTime::now() - Duration::from_secs(s));
+        assert_eq!(c(0), t.ages[0]);
+        assert_eq!(c(3599), t.ages[0]);
+        assert_eq!(c(3600), t.ages[1]);
+        assert_eq!(c(86_400), t.ages[2]);
+        assert_eq!(c(86_400 * 7), t.ages[3]);
+        assert_eq!(c(86_400 * 400), t.ages[3]);
     }
 
     #[test]

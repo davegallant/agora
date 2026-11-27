@@ -65,12 +65,10 @@ pub enum Sort {
     Recent,
     /// By project name, newest first within each.
     Project,
-    /// Largest transcript first.
-    Size,
 }
 
 impl Sort {
-    const ALL: [Sort; 3] = [Sort::Recent, Sort::Project, Sort::Size];
+    const ALL: [Sort; 2] = [Sort::Recent, Sort::Project];
 
     pub fn next(self) -> Sort {
         let i = Self::ALL.iter().position(|&s| s == self).unwrap_or(0);
@@ -81,7 +79,6 @@ impl Sort {
         match self {
             Sort::Recent => "recent",
             Sort::Project => "project",
-            Sort::Size => "size",
         }
     }
 
@@ -133,7 +130,7 @@ mod tests {
                 channel: None,
                 agent: None,
                 live_only: true,
-                sort: Sort::Size,
+                sort: Sort::Recent,
             }
         );
         fs::remove_dir_all(&h).unwrap();
@@ -142,7 +139,8 @@ mod tests {
     #[test]
     fn sorts_cycle_and_round_trip_by_name() {
         assert_eq!(Sort::Recent.next(), Sort::Project);
-        assert_eq!(Sort::Size.next(), Sort::Recent);
+        assert_eq!(Sort::Project.next(), Sort::Recent);
+        assert_eq!(Sort::from_name("size"), None, "no longer a sort");
         for s in Sort::ALL {
             assert_eq!(Sort::from_name(s.name()), Some(s));
         }
