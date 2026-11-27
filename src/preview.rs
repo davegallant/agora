@@ -30,28 +30,36 @@ pub fn current_style(theme: &Theme) -> Style {
 }
 
 /// Byte ranges of every case-insensitive occurrence of any term that starts
-/// a word, as the search matches them, merged and sorted. ASCII lowercasing
-/// keeps byte offsets aligned with `text`.
+/// a word, as the search matches them, merged and sorted. Hits of different
+/// terms with only spaces between them merge too, so "redis cache" is one
+/// match, not two; a repeated word ("x x") stays two. ASCII lowercasing keeps
+/// byte offsets aligned with `text`.
 pub fn find_ranges(text: &str, terms: &[String]) -> Vec<(usize, usize)> {
     let lower = text.to_ascii_lowercase();
-    let mut ranges: Vec<(usize, usize)> = Vec::new();
-    for t in terms.iter().filter(|t| !t.is_empty()) {
+    // (start, end, which term)
+    let mut ranges: Vec<(usize, usize, usize)> = Vec::new();
+    for (n, t) in terms.iter().enumerate().filter(|(_, t)| !t.is_empty()) {
         ranges.extend(
             lower
                 .match_indices(t.as_str())
                 .filter(|(at, _)| crate::search::starts_word(&lower, *at))
-                .map(|(at, m)| (at, at + m.len())),
+                .map(|(at, m)| (at, at + m.len(), n)),
         );
     }
     ranges.sort_unstable();
-    let mut merged: Vec<(usize, usize)> = Vec::new();
-    for (s, e) in ranges {
+    let mut merged: Vec<(usize, usize, usize)> = Vec::new();
+    for (s, e, n) in ranges {
         match merged.last_mut() {
-            Some(last) if s <= last.1 => last.1 = last.1.max(e),
-            _ => merged.push((s, e)),
+            Some(last)
+                if s <= last.1 || (n != last.2 && text[last.1..s].bytes().all(|b| b == b' ')) =>
+            {
+                last.1 = last.1.max(e);
+                last.2 = n;
+            }
+            _ => merged.push((s, e, n)),
         }
     }
-    merged
+    merged.into_iter().map(|(s, e, _)| (s, e)).collect()
 }
 
 fn width_of(c: char) -> usize {
@@ -260,6 +268,11 @@ mod tests {
         // Touching ranges merge into one highlight.
         assert_eq!(find_ranges("ab cd", &terms(&["ab", "ab c"])), [(0, 4)]);
         assert_eq!(find_ranges("ab ab", &terms(&["ab"])), [(0, 2), (3, 5)]);
+        assert_eq!(
+            find_ranges("the Redis  cache, then cache", &terms(&["redis", "cache"])),
+            [(4, 16), (23, 28)],
+            "words with only spaces between are one match"
+        );
         // Offsets are bytes, past multi-byte text.
         assert_eq!(find_ranges("日本 needle", &terms(&["needle"])), [(7, 13)]);
         assert!(find_ranges("short", &terms(&["longer than text"])).is_empty());

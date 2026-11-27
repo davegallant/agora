@@ -6,6 +6,11 @@ All notable changes to agora. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- In the full view, a search for several words highlights them together
+  ("Redis cache") as one match, instead of one word at a time.
+
 ## [0.7.0] - 2026-11-27
 
 ### Added
