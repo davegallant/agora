@@ -22,7 +22,7 @@ pub const KEYS: &[(&str, &str)] = &[
     ("t", "resume or attach in a new Ghostty tab"),
     (
         "v",
-        "read the whole conversation full-screen; / searches it, esc closes",
+        "read the whole conversation full-screen; / searches it, n N jump, esc closes",
     ),
     (
         "x",
@@ -162,13 +162,6 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         app.list_area = Rect::default();
         app.preview_area = main;
         draw_preview(f, app, main);
-    } else if app.previewing {
-        let [list, preview] =
-            Layout::vertical([Constraint::Percentage(45), Constraint::Percentage(55)]).areas(main);
-        app.list_area = list;
-        app.preview_area = preview;
-        draw_list(f, app, list);
-        draw_preview(f, app, preview);
     } else {
         app.list_area = main;
         app.preview_area = Rect::default();
@@ -556,11 +549,6 @@ fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
         }
         header.push(Line::from(spans));
     }
-    let action = match &live {
-        Some(l) if l.term.is_some() => "enter: jump to its tab",
-        Some(l) if l.background.is_some() => "enter: attach (background) · t: attach in new tab",
-        _ => "enter: resume here · t: resume in new tab",
-    };
     let state = match live.as_ref().map(|l| l.state) {
         Some(State::NeedsYou) => Span::styled("needs you  ", Style::new().fg(t.accent).bold()),
         Some(State::Busy) => Span::styled("working  ", Style::new().fg(t.busy)),
@@ -575,9 +563,8 @@ fn draw_preview(f: &mut Frame, app: &mut App, area: Rect) {
         Some(State::Open) => Span::styled("open  ", Style::new().fg(t.open)),
         None => Span::raw(""),
     };
-    let action = if app.reading.is_some() { "" } else { action };
-    if !(action.is_empty() && state.content.is_empty()) {
-        header.push(Line::from(vec![state, Span::raw(action).fg(t.muted)]));
+    if !state.content.is_empty() {
+        header.push(Line::from(state));
     }
 
     // The body is laid out first: the block title reports its matches.
@@ -738,16 +725,7 @@ mod tests {
             last_prompt: String::new(),
         }];
         let mut app = App::new(PathBuf::from("/nonexistent"), sessions);
-        app.previewing = true;
-        let mut term = Terminal::new(TestBackend::new(120, 20)).unwrap();
-        term.draw(|f| super::draw(f, &mut app)).unwrap();
-        let screen: String = term
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|c| c.symbol())
-            .collect();
+        let screen = both(&mut app, 120, 20);
         for want in [
             "agora",
             "Fix the login bug",
@@ -779,6 +757,15 @@ mod tests {
             size: 0,
             last_prompt: String::new(),
         }
+    }
+
+    /// The list, then the selected session in the full view.
+    fn both(app: &mut App, w: u16, h: u16) -> String {
+        let list = screen(app, w, h);
+        app.open_reading();
+        let full = screen(app, w, h);
+        app.reading = None;
+        format!("{list}\n{full}")
     }
 
     fn screen(app: &mut App, w: u16, h: u16) -> String {
@@ -868,12 +855,8 @@ mod tests {
     #[test]
     fn no_sessions() {
         let mut app = App::new(PathBuf::from("/nonexistent"), Vec::new());
-        app.previewing = true;
         let s = screen(&mut app, 80, 20);
-        assert_has(
-            &s,
-            &["0 live · 0/0 sessions", "/ to search", "no sessions match"],
-        );
+        assert_has(&s, &["0 live · 0/0 sessions", "/ to search"]);
     }
 
     #[test]
@@ -940,10 +923,9 @@ mod tests {
             PathBuf::from("/nonexistent"),
             vec![session("a", "Alpha", PathBuf::from("/nonexistent/a"))],
         );
-        app.previewing = true;
         app.pins.toggle(Agent::Claude, "a");
         app.rebuild_view();
-        let s = screen(&mut app, 100, 20);
+        let s = both(&mut app, 100, 20);
         assert_has(&s, &["★ Alpha", " · pinned"]);
         app.live.insert(
             0,
@@ -955,9 +937,9 @@ mod tests {
             },
         );
         app.rebuild_view();
-        assert_has(&screen(&mut app, 100, 20), &[" ●", "★ Alpha", " · pinned"]);
+        assert_has(&both(&mut app, 100, 20), &[" ●", "★ Alpha", " · pinned"]);
         app.pins.toggle(Agent::Claude, "a");
-        let s = screen(&mut app, 100, 20);
+        let s = both(&mut app, 100, 20);
         assert!(!s.contains('★') && !s.contains("pinned"), "{s}");
     }
 
@@ -998,8 +980,7 @@ mod tests {
             PathBuf::from("/nonexistent"),
             vec![session("a", "Alpha", PathBuf::from("/nonexistent/a"))],
         );
-        app.previewing = true;
-        let s = screen(&mut app, 100, 20);
+        let s = both(&mut app, 100, 20);
         assert_has(&s, &["claude · just now · /w/proj"]);
         assert!(!s.contains("now ago"), "{s}");
     }
@@ -1080,25 +1061,12 @@ mod tests {
             PathBuf::from("/nonexistent"),
             vec![session("a", "Alpha", PathBuf::from("/nonexistent/a"))],
         );
-        app.previewing = true;
         let cases = [
-            (
-                State::NeedsYou,
-                false,
-                " ! ",
-                "needs you",
-                "enter: jump to its tab",
-            ),
-            (
-                State::Busy,
-                true,
-                " ● ",
-                "working",
-                "enter: attach (background)",
-            ),
-            (State::Open, true, " ○ ", "open", "t: attach in new tab"),
+            (State::NeedsYou, false, " ! ", "needs you"),
+            (State::Busy, true, " ● ", "working"),
+            (State::Open, true, " ○ ", "open"),
         ];
-        for (state, background, glyph, label, action) in cases {
+        for (state, background, glyph, label) in cases {
             app.live.insert(
                 0,
                 Live {
@@ -1112,8 +1080,8 @@ mod tests {
                     shells: 0,
                 },
             );
-            let s = screen(&mut app, 120, 20);
-            assert_has(&s, &[glyph, label, action, "1 live"]);
+            let s = both(&mut app, 120, 20);
+            assert_has(&s, &[glyph, label, "1 live"]);
         }
         for (shells, label) in [
             (1, "open · 1 shell running"),
@@ -1128,13 +1096,10 @@ mod tests {
                     shells,
                 },
             );
-            assert_has(&screen(&mut app, 120, 20), &[" ◐ ", label]);
+            assert_has(&both(&mut app, 120, 20), &[" ◐ ", label]);
         }
         app.live.clear();
-        assert_has(
-            &screen(&mut app, 120, 20),
-            &["enter: resume here · t: resume in new tab", "0 live"],
-        );
+        assert_has(&both(&mut app, 120, 20), &["0 live"]);
     }
 
     #[test]
@@ -1144,7 +1109,7 @@ mod tests {
             PathBuf::from("/nonexistent"),
             vec![session("a", "Long", path)],
         );
-        app.previewing = true;
+        app.open_reading();
         let s = screen(&mut app, 80, 24);
         assert_has(&s, &["question 39", " 100% "]);
         assert!(!s.contains("▌ question 0 "), "{s}");
@@ -1167,8 +1132,8 @@ mod tests {
             PathBuf::from("/nonexistent"),
             vec![session("a", "Long", path)],
         );
-        app.previewing = true;
         app.filter = "question".into();
+        app.open_reading();
         let s = screen(&mut app, 80, 24);
         assert_has(&s, &[" 40/40 ", " n/N ", "question 39"]);
         app.pane.current = Some(0);
@@ -1178,7 +1143,7 @@ mod tests {
         // The scrollbar ticks every match and marks the current one.
         assert_has(&s, &["━", "◆"]);
         // A quoted phrase: question 1 and 10-19.
-        app.filter = "\"question 1\"".into();
+        app.reading.as_mut().unwrap().query = "\"question 1\"".into();
         assert_has(&screen(&mut app, 80, 24), &[" 11/11 "]);
     }
 
@@ -1220,10 +1185,9 @@ mod tests {
             PathBuf::from("/nonexistent"),
             vec![session("a", "Short", path)],
         );
-        app.previewing = true;
         app.filter = "elsewhere".into();
         app.text_hits.insert(0, (1, "…elsewhere…".into()));
-        assert_has(&screen(&mut app, 80, 20), &["no match shown"]);
+        assert_has(&both(&mut app, 80, 20), &["no match shown"]);
     }
 
     #[test]
@@ -1253,20 +1217,6 @@ mod tests {
         let s: String = buf.content().iter().map(|c| c.symbol()).collect();
         assert_has(&s, &[" theme ", "▶ tokyo-night", "monokai", "esc cancel"]);
         assert_eq!(buf[(0, 0)].bg, app.theme().bg.unwrap());
-    }
-
-    #[test]
-    fn the_preview_is_hidden_until_i() {
-        let path = long_transcript("hidden", 3);
-        let mut app = App::new(
-            PathBuf::from("/nonexistent"),
-            vec![session("a", "Long", path)],
-        );
-        let s = screen(&mut app, 80, 24);
-        assert!(!s.contains(" preview "), "{s}");
-        assert!(!s.contains("question 2"), "{s}");
-        app.previewing = true;
-        assert_has(&screen(&mut app, 80, 24), &["question 2"]);
     }
 
     #[test]

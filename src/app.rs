@@ -118,8 +118,6 @@ pub struct App {
     pub picking_theme: Option<usize>,
     /// The `?` overlay is up; the next key closes it.
     pub showing_keys: bool,
-    /// The preview pane shows under the list; `i` toggles it, off at start.
-    pub previewing: bool,
     /// The session `x` asked to close, waiting for a second `x`; any other
     /// key cancels.
     closing: Option<PathBuf>,
@@ -295,7 +293,6 @@ impl App {
             theme,
             picking_theme: None,
             showing_keys: false,
-            previewing: false,
             closing: None,
             closed: Vec::new(),
             reading: None,
@@ -827,7 +824,7 @@ impl App {
         self.reading.as_ref().map_or(&self.filter, |r| &r.query)
     }
 
-    fn open_reading(&mut self) {
+    pub(crate) fn open_reading(&mut self) {
         if let Some(i) = self.selected() {
             self.reading = Some(Reading {
                 path: self.sessions[i].path.clone(),
@@ -1112,17 +1109,6 @@ impl App {
                 self.sort = self.sort.next();
                 self.rebuild_view();
             }
-            KeyCode::Char('i') => self.previewing = !self.previewing,
-            KeyCode::Char('J') if self.previewing => self.scroll_preview(3),
-            KeyCode::Char('K') if self.previewing => self.scroll_preview(-3),
-            KeyCode::Char('f') if ctrl && self.previewing => {
-                self.scroll_preview((self.pane.height as isize - 2).max(1))
-            }
-            KeyCode::Char('b') if ctrl && self.previewing => {
-                self.scroll_preview(-(self.pane.height as isize - 2).max(1))
-            }
-            KeyCode::Char('n') if self.previewing => self.jump_match(1),
-            KeyCode::Char('N') if self.previewing => self.jump_match(-1),
             KeyCode::Enter => return self.open(),
             KeyCode::Char('t') => self.open_in_new_tab(),
             KeyCode::Char('y') => self.copy(false),
@@ -1941,7 +1927,7 @@ mod tests {
     #[test]
     fn scrolling_the_preview() {
         let mut a = five();
-        a.previewing = true;
+        a.open_reading();
         a.pane.top = 10;
         a.pane.height = 20;
         press(&mut a, KeyCode::Char('J'));
@@ -2004,14 +1990,14 @@ mod tests {
             ],
         );
         let mut a = app(vec![s]);
-        a.previewing = true;
+        a.open_reading();
         let pane = a.preview_pane(0, 40);
         assert_eq!(pane.follow, Follow::Bottom);
         assert_eq!(pane.current, None);
         assert!(pane.r.matches.is_empty());
         assert_eq!(pane.r.rows.len(), 5);
 
-        a.filter = "needle".into();
+        a.reading.as_mut().unwrap().query = "needle".into();
         let pane = a.preview_pane(0, 40);
         assert_eq!(pane.r.matches, [0, 4]);
         assert_eq!(pane.current, Some(1), "the most recent match");
@@ -2030,7 +2016,7 @@ mod tests {
         assert_eq!(pane.follow, Follow::Top(0));
 
         // A new filter starts over.
-        a.filter = "again".into();
+        a.reading.as_mut().unwrap().query = "again".into();
         let pane = a.preview_pane(0, 40);
         assert_eq!(pane.current, Some(0));
         assert_eq!(pane.r.matches, [4]);
@@ -2038,22 +2024,9 @@ mod tests {
     }
 
     #[test]
-    fn i_toggles_the_preview_and_its_keys() {
-        let mut a = five();
-        assert!(!a.previewing);
-        a.pane.top = 10;
-        press(&mut a, KeyCode::Char('J'));
-        assert_eq!(a.pane.follow, Follow::Bottom, "J does nothing while hidden");
-        press(&mut a, KeyCode::Char('i'));
-        assert!(a.previewing);
-        press(&mut a, KeyCode::Char('i'));
-        assert!(!a.previewing);
-    }
-
-    #[test]
     fn jumping_without_matches_says_so() {
         let mut a = five();
-        a.previewing = true;
+        a.open_reading();
         press(&mut a, KeyCode::Char('n'));
         assert_eq!(a.status.as_deref(), Some("no matches in this preview"));
         assert_eq!(a.pane.current, None);

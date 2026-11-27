@@ -10,7 +10,7 @@ now, and everything you can resume, across **Claude Code**, **Codex** and **pi**
 - **History underneath**, newest first, each with its latest prompt beside
   the title.
 - **Refreshes as you work.** New sessions appear and busy ones move up on their
-  own, and the preview (`i`) follows a conversation as it is written.
+  own, and the full view (`v`) follows a conversation as it is written.
 - **Search** by title, project, path or agent as you type, and through the
   conversation text itself a moment later. Every word must match the start of
   a word, in any order (`id` finds "ID" and "identity", not "consider");
@@ -19,10 +19,9 @@ now, and everything you can resume, across **Claude Code**, **Codex** and **pi**
   and one found only in its conversation shows the matching passage beside
   its title. Tool output and file contents don't
   count.
-- **Preview** of the end of the conversation for the selected session, shown
-  under the list with `i`.
+- **Full view** (`v`) of a whole conversation, with its own search.
 - **Git context**: `±` marks a session whose folder has uncommitted changes,
-  and the preview shows its branch and how far it is ahead of or behind.
+  and the full view shows its branch and how far it is ahead of or behind.
 - **Enter** attaches to a running background Claude agent, or resumes the
   session here in its own directory. When you quit the agent, agora comes back
   where you left it.
@@ -57,7 +56,6 @@ Other terminals don't have these yet.
 | `enter` | attach / resume here (jump to tab in Ghostty) |
 | `t` | resume (or attach) in a new tab (Ghostty only) |
 | `v` | read the whole conversation full-screen: `/` searches it, `n`/`N` jump, `esc` closes |
-| `i` | show / hide the preview under the list: `J`/`K` scroll it, `n`/`N` jump between search matches |
 | `x` | close a live session: its Ghostty split or tab, or `claude stop` for a background one; press twice to confirm |
 | `y` `Y` | copy the resume command / the project path |
 | `d` | review the session folder's changes in [hunk](https://github.com/modem-dev/hunk) (`git diff` without it); agora returns after |
@@ -105,7 +103,7 @@ A folder covers itself and everything under it, and `*` matches part of one
 folder name. The first matching line wins. A session that no line matches gets
 a channel named after its own folder. `c` steps through your channels in the
 order written, then through those folder channels, most recent first; `#`
-lists them all with their session counts. The preview names the selected
+lists them all with their session counts. The full view names the
 session's channel, and a search inside a channel says how many more sessions
 match in other channels. Search matches channel names too. `agora --channels` prints every channel and its
 session count, tab-separated, in that same order.
