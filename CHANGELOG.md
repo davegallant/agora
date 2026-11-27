@@ -16,6 +16,13 @@ All notable changes to agora. The format follows
 - The preview pane is hidden at start, so the list fills the screen; `i` shows
   or hides it.
 
+### Fixed
+
+- A session titled from its first prompt (every pi session, and others
+  without a title of their own) shows the first line, cut to about 60
+  characters, instead of the whole prompt; a pi skill prompt reads as
+  `/skill args`.
+
 ## [0.6.0] - 2026-11-25
 
 ### Added

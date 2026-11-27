@@ -16,6 +16,8 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, SystemTime};
 
+/// Longest title made from a prompt, when the agent wrote none.
+const TITLE_CHARS: usize = 60;
 const HEAD_BYTES: u64 = 128 * 1024;
 const TAIL_BYTES: u64 = 64 * 1024;
 /// How far back to look when the last line alone is longer than `TAIL_BYTES`.
@@ -152,7 +154,7 @@ fn last_prompt(agent: Agent, tail: &str) -> String {
         } else {
             message_of(agent, &v)
                 .filter(|m| m.user)
-                .map(|m| clean(&m.text))
+                .map(|m| prompt_line(&m.text))
         };
         if let Some(t) = t.filter(|t| !is_noise(t)) {
             out = t;
@@ -174,6 +176,37 @@ fn clean(s: &str) -> String {
         .filter(|w| !w.is_empty())
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// A prompt's first line. A skill pi expanded into the prompt
+/// (`<skill name="x" …>…</skill>` then the user's words) reads as `/x words`.
+fn prompt_line(t: &str) -> String {
+    let first = |t: &str| {
+        t.lines()
+            .map(clean)
+            .find(|l| !l.is_empty())
+            .unwrap_or_default()
+    };
+    if let Some(rest) = t.trim_start().strip_prefix("<skill name=\"") {
+        if let Some((name, _)) = rest.split_once('"') {
+            let args = rest.split_once("</skill>").map_or("", |(_, a)| a);
+            return clean(&format!("/{name} {}", first(args)));
+        }
+    }
+    first(t)
+}
+
+/// A title made from a prompt: cut at a word to about `TITLE_CHARS`.
+fn prompt_title(t: String) -> String {
+    if t.chars().count() <= TITLE_CHARS {
+        return t;
+    }
+    let cut: String = t.chars().take(TITLE_CHARS).collect();
+    let cut = match cut.rfind(' ') {
+        Some(i) if i > TITLE_CHARS / 2 => &cut[..i],
+        _ => &cut,
+    };
+    format!("{}…", cut.trim_end())
 }
 
 /// Injected context, slash commands and reminders make poor titles.
@@ -228,7 +261,7 @@ fn parse_claude(path: &Path, mtime: SystemTime) -> Option<Session> {
                 }
             }
             Some("user") if prompt.is_none() && v["isMeta"].as_bool() != Some(true) => {
-                let t = clean(&content_text(&v["message"]["content"]));
+                let t = prompt_line(&content_text(&v["message"]["content"]));
                 if !is_noise(&t) {
                     prompt = Some(t);
                 }
@@ -259,7 +292,9 @@ fn parse_claude(path: &Path, mtime: SystemTime) -> Option<Session> {
         path: path.to_path_buf(),
         dir: dir.unwrap_or_else(|| cwd.clone()),
         cwd,
-        title: title.or(prompt).unwrap_or_else(|| "(no prompt)".into()),
+        title: title
+            .or(prompt.map(prompt_title))
+            .unwrap_or_else(|| "(no prompt)".into()),
         mtime,
         size: 0,
         last_prompt: last,
@@ -288,7 +323,7 @@ fn parse_codex(
                 if prompt.is_none() && p["type"] == "message" && p["role"] == "user" =>
             {
                 for b in p["content"].as_array().into_iter().flatten() {
-                    let t = clean(b["text"].as_str().unwrap_or(""));
+                    let t = prompt_line(b["text"].as_str().unwrap_or(""));
                     if !is_noise(&t) {
                         prompt = Some(t);
                         break;
@@ -305,7 +340,7 @@ fn parse_codex(
     let title = titles
         .get(&id)
         .cloned()
-        .or(prompt)
+        .or(prompt.map(prompt_title))
         .unwrap_or_else(|| "(no prompt)".into());
     Some(Session {
         agent: Agent::Codex,
@@ -330,7 +365,7 @@ fn parse_pi(path: &Path, mtime: SystemTime) -> Option<Session> {
                 cwd = v["cwd"].as_str().map(String::from);
             }
             Some("message") if prompt.is_none() && v["message"]["role"] == "user" => {
-                let t = clean(&content_text(&v["message"]["content"]));
+                let t = prompt_line(&content_text(&v["message"]["content"]));
                 if !is_noise(&t) {
                     prompt = Some(t);
                 }
@@ -345,7 +380,9 @@ fn parse_pi(path: &Path, mtime: SystemTime) -> Option<Session> {
         path: path.to_path_buf(),
         dir: cwd.clone(),
         cwd,
-        title: prompt.unwrap_or_else(|| "(no prompt)".into()),
+        title: prompt
+            .map(prompt_title)
+            .unwrap_or_else(|| "(no prompt)".into()),
         mtime,
         size: 0,
         last_prompt: read_last_lines(path)
@@ -625,7 +662,7 @@ mod tests {
         );
         assert_eq!(
             parse_claude(&p, SystemTime::UNIX_EPOCH).unwrap().title,
-            "hello there"
+            "hello"
         );
     }
 
@@ -640,7 +677,7 @@ mod tests {
             ],
         );
         let s = parse_claude(&p, SystemTime::UNIX_EPOCH).unwrap();
-        assert_eq!(s.last_prompt, "second ask");
+        assert_eq!(s.last_prompt, "second");
         // Claude's own record wins over the messages around it.
         let p = tmp(
             "last-record.jsonl",
@@ -651,6 +688,26 @@ mod tests {
         );
         let s = parse_claude(&p, SystemTime::UNIX_EPOCH).unwrap();
         assert_eq!(s.last_prompt, "latest ask");
+    }
+
+    #[test]
+    fn a_pi_skill_prompt_reads_as_a_command() {
+        assert_eq!(
+            prompt_line("<skill name=\"commit\" location=\"/s/SKILL.md\">\n# Commit\nlong text\n</skill>\n\namend it"),
+            "/commit amend it"
+        );
+        assert_eq!(
+            prompt_line("<skill name=\"commit\">\nbody\n</skill>"),
+            "/commit"
+        );
+        assert_eq!(prompt_line("\n first  line\nsecond"), "first line");
+        let long = "word ".repeat(30);
+        let t = prompt_title(long.trim().into());
+        assert!(
+            t.ends_with("word…") && t.chars().count() <= TITLE_CHARS + 1,
+            "{t}"
+        );
+        assert_eq!(prompt_title("short".into()), "short");
     }
 
     #[test]
